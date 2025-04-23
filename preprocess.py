@@ -18,16 +18,16 @@ client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 
 with open("prompt/filtering_system.txt", "r", encoding="utf-8") as file:
-    system_prompt = file.read()
+    system_prompt_filtering = file.read()
     
 with open("prompt/filtering_user.txt", "r", encoding="utf-8") as file:
-    base_user_prompt = file.read()
+    base_user_prompt_filtering = file.read()
     
 with open("prompt/cleaning_system.txt", "r", encoding="utf-8") as file:
-    system_prompt = file.read()
+    system_prompt_cleaning = file.read()
     
 with open("prompt/cleaning_user.txt", "r", encoding="utf-8") as file:
-    base_user_prompt = file.read()
+    base_user_prompt_cleaning = file.read()
 
 
 def format_time(seconds):
@@ -60,12 +60,12 @@ def prepare_qna_data(df):
     return df[['id', '제목', '본문', '답변', 'answer_date']]
 
 def is_relevant_sample(title, text, answer):
-    user_prompt = base_user_prompt.replace("{title}", title).replace("{text}", str(text)).replace("{answer}", answer)
+    user_prompt = base_user_prompt_filtering.replace("{title}", title).replace("{text}", str(text)).replace("{answer}", answer)
     
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": system_prompt_filtering},
             {"role": "user", "content": user_prompt}],
         seed=42
     )
@@ -138,7 +138,7 @@ def run_batch_pipeline(df):
         "url": "/v1/chat/completions",
         "body": {"model": "gpt-4o-mini", 
                 "messages":[
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": system_prompt_cleaning},
                     ],
                 "max_tokens": 1000
                 }
@@ -146,7 +146,7 @@ def run_batch_pipeline(df):
     
     batches = []
     def _prepare_batch_input(title, text, answer, i):
-        user_prompt = base_user_prompt.replace("{title}", title).replace("{text}", str(text)).replace("{answer}", answer)
+        user_prompt = base_user_prompt_cleaning.replace("{title}", title).replace("{text}", str(text)).replace("{answer}", answer)
         temp = deepcopy(init_template)
         temp['custom_id'] = f'{i}'
         temp['body']['messages'].append({"role": "user", "content": user_prompt})
