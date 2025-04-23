@@ -35,16 +35,16 @@ MODEL_NAME_TO_API_ID = {
 with open("prompt/generating_answer_system.txt", encoding="utf-8") as file:
     system_prompt = file.read()
     
-with open("prompt/generating_answer_0shot_gpt_user.txt", encoding="utf-8") as file:
+with open("prompt/generating_answer_gpt_0shot_user.txt", encoding="utf-8") as file:
     gpt_user_prompt = file.read()
     
-with open("prompt/generating_answer_0shot_claude_user.txt", encoding="utf-8") as file:
+with open("prompt/generating_answer_claude_0shot_user.txt", encoding="utf-8") as file:
     claude_user_prompt = file.read()
     
-with open("prompt/generating_answer_0shot_gemini_user.txt", encoding="utf-8") as file:
+with open("prompt/generating_answer_gemini_0shot_user.txt", encoding="utf-8") as file:
     gemini_user_prompt = file.read()
     
-with open("prompt/generating_answer_0shot_exaone_user.txt", encoding="utf-8") as file:
+with open("prompt/generating_answer_exaone_0shot_user.txt", encoding="utf-8") as file:
     exaone_user_prompt = file.read()
 
 
@@ -240,7 +240,7 @@ def run_batch_gpt_pipeline(df, model_name, client):
                 contents.append(content)
                 
         df['generated_answer'] = contents
-        batch_output_file = f"data/output_{model_name}_0shot_batch.json"
+        batch_output_file = f"data/eval/output_{model_name}_0shot.json"
         df.to_json(batch_output_file, orient='records', force_ascii=False, indent=4) 
         print(f"{batch_output_file}")
             
@@ -315,7 +315,7 @@ def run_batch_claude_pipeline(df, model_name, client):
                     contents.append("")
         
         df['generated_answer'] = contents
-        batch_output_file = f"data/output_{model_name}_0shot_batch.json"
+        batch_output_file = f"data/eval/output_{model_name}_0shot.json"
         df.to_json(batch_output_file, orient='records', force_ascii=False, indent=4)
         print(f"{batch_output_file}")
             
@@ -340,7 +340,7 @@ def process_with_model(df, model_name, use_batch_api):
         df_len = len(df)
         generated_data = []
         start_idx = 0
-        output_path = f"data/output_{model_name}_0shot.json"
+        output_path = f"data/eval/output_{model_name}_0shot.json"
         
         if os.path.exists(output_path):
             with open(output_path, "r", encoding="utf-8") as f:
@@ -373,6 +373,8 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, required=True, choices=list(MODEL_NAME_TO_API_ID.keys()))
     parser.add_argument("--use_batch_api", action="store_true")
     args = parser.parse_args()
+    
     df = pd.read_json("data/test_data.json")
+    
     process_with_model(df, model_name=args.model_name, use_batch_api=args.use_batch_api)
     

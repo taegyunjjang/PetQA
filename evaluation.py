@@ -1,21 +1,29 @@
 import os
 import pandas as pd
+import argparse
 
 import torch.nn.functional as F
 
 from rouge import Rouge
 from bert_score import score
-# from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import SentenceTransformer, util
 
 from dotenv import load_dotenv
 load_dotenv()
-hf_token = os.getenv("HF_TOKEN")
 cache_dir = "./models"
 
 import openai
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
+
+MODEL_NAME_TO_API_ID = {
+    "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
+    "gpt-4.1-nano": "gpt-4.1-nano-2025-04-14",
+    "claude-3-haiku": "claude-3-haiku-20240307",
+    "gemini-2.0-flash": "gemini-2.0-flash-001",
+    "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct"
+}
 
 with open("prompt/evaluation_system.txt", "r", encoding="utf-8") as file:
     system_prompt = file.read()
@@ -62,13 +70,13 @@ def compute_avg_llm_similarity(gold_answers, generated_answers):
     avg_similarity_score = sum(similarity_scores) / len(similarity_scores)
     print(f"LLM-based Avg Similarity: {avg_similarity_score:.2f}")
 
-# def compute_avg_sbert_similiarity(model_name, gold_answers, generated_answers):
-#     model = SentenceTransformer(model_name, cache_folder=cache_dir)
-#     gold_embeddings = model.encode(gold_answers)
-#     generated_embeddings = model.encode(generated_answers)
-#     cosine_scores = util.pytorch_cos_sim(gold_embeddings, generated_embeddings)
-#     avg_similarity_score = cosine_scores.mean().item()
-#     print(f"SBERT-based Avg Similarity: {avg_similarity_score:.2f}")
+def compute_avg_sbert_similiarity(model_name, gold_answers, generated_answers):
+    model = SentenceTransformer(model_name, cache_folder=cache_dir)
+    gold_embeddings = model.encode(gold_answers)
+    generated_embeddings = model.encode(generated_answers)
+    cosine_scores = util.pytorch_cos_sim(gold_embeddings, generated_embeddings)
+    avg_similarity_score = cosine_scores.mean().item()
+    print(f"SBERT-based Avg Similarity: {avg_similarity_score:.2f}")
 
 def load_answer(file_path):
     df = pd.read_json(file_path)
@@ -77,15 +85,23 @@ def load_answer(file_path):
     return gold_answers, generated_answers
 
 
-def eval(file_path):
+def evaluate_answer(file_path):
     gold_answers, generated_answers = load_answer(file_path)
     compute_avg_rougeL_f1(gold_answers, generated_answers)
     compute_avg_bertscore_f1(list(gold_answers), list(generated_answers))
 
 
 if __name__ == "__main__":
-    file_path = "data/output_gpt-4o-mini_0shot.json"
-    # file_path = "data/output_hcx-dash-001.csv"
-    # file_path = "data/output_exaone_3.5_7.8b_0shot.json"
+    parser = argparse.ArgumentParser(description="평가용 데이터 입력")
+    parser.add_argument("--model_name", type=str, required=True, choices=list(MODEL_NAME_TO_API_ID.keys()))
+    parser.add_argument("--use_raw_format", action="store_true")
+    args = parser.parse_args()
     
-    eval(file_path)
+    file_path = f"data/eval/output_{args.model_name}_0shot"
+    if args.use_raw_format:
+        file_path += "_raw"
+    file_path += ".json"
+    print(f"평가 파일: {file_path}")
+    
+    evaluate_answer(file_path)
+    
