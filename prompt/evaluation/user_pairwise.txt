@@ -1,0 +1,3 @@
+질문: {question}
+응답 A: {response_a}
+응답 B: {response_b}

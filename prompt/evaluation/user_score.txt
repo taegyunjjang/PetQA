@@ -1,0 +1,3 @@
+질문: {question}
+수의사 답변: {gold_answer}
+모델이 생성한 답변: {generated_answer}

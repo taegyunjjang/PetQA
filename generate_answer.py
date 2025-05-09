@@ -41,7 +41,6 @@ def format_time(seconds):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     seconds = int(seconds % 60)
-    
     if hours > 0:
         return f"{hours}시간 {minutes}분 {seconds}초"
     elif minutes > 0:
@@ -74,10 +73,8 @@ def get_prompts(model_name, shot, use_raw_format):
     user_prompt_path = f"prompt/generate_answer/user.txt"
     
     if model_family == "claude":
-        user_prompt_path = f"prompt/generating_answer_{model_family}_user.txt"
-    
+        user_prompt_path = f"prompt/generate_answer/user_{model_family}.txt"
     if use_raw_format:
-        system_prompt_path = system_prompt_path.replace(".txt", "_raw.txt")
         user_prompt_path = user_prompt_path.replace(".txt", "_raw.txt")
     
     system_prompt = load_prompt(system_prompt_path)
@@ -98,44 +95,86 @@ def load_hf_model_and_tokenizer(model_name, cache_dir):
     tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir)
     return model, tokenizer
 
-def generate_gpt_answer(client, model_name, question, id, system_prompt, base_user_prompt):
-    user_prompt = base_user_prompt.replace("{question}", question)
+def build_fewshot_examples(sample, shot, use_raw_format):
+    examples = ""
+    for i in range(int(shot)):
+        if use_raw_format:
+            title = sample['similar_questions'][i]['title']
+            content = sample['similar_questions'][i]['content']
+            answer = sample['similar_questions'][i]['answer']
+            examples += f"제목: {title}\n본문: {content}\n답변: {answer}\n\n"
+        else:
+            question = sample['similar_questions'][i]['question']
+            answer = sample['similar_questions'][i]['answer']
+            examples += f"질문: {question}\n답변: {answer}\n\n"
+    return examples.strip()
+
+def get_model_processor(model_name):
+    model_family = parse_model_name(model_name)
+    if model_family == "gpt":
+        return lambda *args: generate_gpt_answer(openai_client, model_name, *args)
+    elif model_family == "claude":
+        return lambda *args: generate_claude_answer(anthropic_client, model_name, *args)
+    elif model_family == "gemini":
+        return lambda *args: generate_gemini_answer(model_name, *args)
+    elif model_family == "exaone":
+        model, tokenizer = load_hf_model_and_tokenizer(model_name, cache_dir)
+        return lambda *args: generate_exaone_answer(model, tokenizer, *args)
+
+def process_model_output(raw_output):
+    # 괄호 개수 일치 보정
+    open_braces = raw_output.count("{")
+    close_braces = raw_output.count("}")
+    if open_braces > close_braces:
+        raw_output += "}" * (open_braces - close_braces)
+    elif close_braces > open_braces:
+        raw_output = "{" * (close_braces - open_braces) + raw_output
+
+    # JSON 형식으로 변환
+    try:
+        parsed = json.loads(raw_output)
+    except json.JSONDecodeError:
+        print(f"JSONDecodeError: {raw_output}")
+        parsed = {"답변": ""}
+    return parsed
     
+def generate_gpt_answer(client, model_name, *args):
+    system_prompt, user_prompt = args
     response = client.chat.completions.create(
         model=MODEL_NAME_TO_API_ID[model_name],
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}],
+        max_tokens=2048,
         temperature=0,
         seed=42
     )
     return response.choices[0].message.content.strip()
 
-def generate_claude_answer(client, model_name, question, system_prompt, base_user_prompt):
-    user_prompt = base_user_prompt.replace("{question}", question)
-    
+def generate_claude_answer(client, model_name, *args):
+    system_prompt, user_prompt = args
     message = client.messages.create(
         model = MODEL_NAME_TO_API_ID[model_name],
         temperature = 0,
-        max_tokens = 1024,
+        max_tokens = 2048,
         system = system_prompt,
         messages=[
             {"role": "user", "content": user_prompt}
         ]
     )
-    
     return message.content[0].text
 
-def generate_gemini_answer(model_name, question, system_prompt, base_user_prompt):
-    user_prompt = base_user_prompt.replace("{question}", question)
-    
+def generate_gemini_answer(model_name, *args):
+    system_prompt, user_prompt = args
     model = genai.GenerativeModel(
         model_name=MODEL_NAME_TO_API_ID[model_name], 
         system_instruction=system_prompt
     )
     
     generation_config = {
-        "temperature": 0
+        "temperature": 0, 
+        "max_output_tokens": 2048,
+        "response_mime_type": "application/json"
     }
     
     response = model.generate_content(
@@ -144,12 +183,10 @@ def generate_gemini_answer(model_name, question, system_prompt, base_user_prompt
         ],
         generation_config=generation_config
     )
-    
     return response.text
     
-def generate_exaone_answer(model, tokenizer, question, system_prompt, base_user_prompt):
-    user_prompt = base_user_prompt.replace("{question}", question)
-
+def generate_exaone_answer(model, tokenizer, *args):
+    system_prompt, user_prompt = args
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
@@ -165,7 +202,7 @@ def generate_exaone_answer(model, tokenizer, question, system_prompt, base_user_
     output = model.generate(
         input_ids.to("cuda"),
         eos_token_id=tokenizer.eos_token_id,
-        max_new_tokens=1024,
+        max_new_tokens=2048,
         do_sample=False
     )
     
@@ -186,6 +223,7 @@ def generate_exaone_answer(model, tokenizer, question, system_prompt, base_user_
 
 def run_batch_gpt_pipeline(df, model_name, client, base_system_prompt, base_user_prompt, shot, fewshot_map, use_raw_format):
     print("배치 작업을 위한 입력 파일 생성 중...")
+    start_time = time.time()
     
     init_template = {
         "custom_id": None,
@@ -194,40 +232,45 @@ def run_batch_gpt_pipeline(df, model_name, client, base_system_prompt, base_user
         "body": {
             "model": MODEL_NAME_TO_API_ID[model_name], 
             "messages":[],
-            "max_tokens": 1024
+            "max_tokens": 2048,
+            "temperature": 0
         }
     }
     
     batches = []
-    def _prepare_batch_input(question, id, shot):
+    def _prepare_batch_input(row, shot, use_raw_format):
+        id = row["id"]
         if shot == "0":
             system_prompt = base_system_prompt
         else:
             sample = fewshot_map.get(id)
-            fewshot_examples = ""
-            for i in range(1, int(shot) + 1):
-                fewshot_question = sample['similar_questions'][i]['question']
-                fewshot_answer = sample['similar_questions'][i]['answer']
-                fewshot_examples += f"질문: {fewshot_question}\n답변: {fewshot_answer}\n\n"
-                
-            system_prompt = base_system_prompt.replace("{fewshot_examples}", fewshot_examples)
+            if sample is None:
+                raise ValueError(f"[Fewshot Error] No fewshot example for id: {id}")
             
-        user_prompt = base_user_prompt.replace("{question}", question)
+            fewshot_examples = build_fewshot_examples(sample, shot, use_raw_format)
+            system_prompt = base_system_prompt.replace("{fewshot_examples}", fewshot_examples)
+        
+        if use_raw_format:
+            user_prompt = base_user_prompt.replace("{title}", row["title"]).replace("{content}", row["content"])
+        else:
+            user_prompt = base_user_prompt.replace("{question}", row["question"])
         
         temp = deepcopy(init_template)
-        temp['custom_id'] = f'{id}'
+        temp['custom_id'] = str(id)
         temp['body']['messages'].append({"role": "system", "content": system_prompt})
         temp['body']['messages'].append({"role": "user", "content": user_prompt})
         batches.append(temp)
         
     for _, row in df.iterrows():
-        _prepare_batch_input(row['question'], row['id'], shot)
+        _prepare_batch_input(row, shot, use_raw_format)
         
     batch_input_file = f"data/batch_input_{model_name}_{shot}.jsonl"
+    if use_raw_format:
+        batch_input_file = batch_input_file.replace(".jsonl", "_raw.jsonl")
+        
     with open(batch_input_file, 'w', encoding='utf-8') as file:
         for item in batches:
-            json_string = json.dumps(item, ensure_ascii=False)
-            file.write(json_string + '\n')
+            file.write(json.dumps(item, ensure_ascii=False) + '\n')
     
     print("OpenAI 서버에 입력 파일 업로드 중...")
     batch_input_file = client.files.create(
@@ -246,7 +289,6 @@ def run_batch_gpt_pipeline(df, model_name, client, base_system_prompt, base_user
     )
     print(f"ID: {batch_job.id}")
     
-    start_time = time.time()
     status_transition = False
     try:
         while True:
@@ -287,6 +329,9 @@ def run_batch_gpt_pipeline(df, model_name, client, base_system_prompt, base_user
         file_response = client.files.content(output_file_id).content
         
         batch_output_file = f"data/batch_output_{model_name}_{shot}.jsonl"
+        if use_raw_format:
+            batch_output_file = batch_output_file.replace(".jsonl", "_raw.jsonl")
+            
         with open(batch_output_file, "wb") as f:
             f.write(file_response)
         
@@ -295,10 +340,14 @@ def run_batch_gpt_pipeline(df, model_name, client, base_system_prompt, base_user
             for line in f:
                 data = json.loads(line)
                 content = data["response"]["body"]["choices"][0]["message"]["content"]
-                contents.append(content)
+                cleaned_content = re.sub(r"^\s*(#{1,6})?\s*답변\s*[:：]?\s*\n*", "", content.strip(), flags=re.IGNORECASE)
+                contents.append(cleaned_content)
                 
         df['generated_answer'] = contents
-        batch_output_file = f"data/eval/output_{model_name}_dynamic_{shot}.json"
+        batch_output_file = f"data/eval/output_{model_name}_{shot}.json"
+        if use_raw_format:
+            batch_output_file = batch_output_file.replace(".json", "_raw.json")
+            
         df.to_json(batch_output_file, orient='records', force_ascii=False, indent=4) 
         print(f"{batch_output_file}")
             
@@ -308,26 +357,34 @@ def run_batch_gpt_pipeline(df, model_name, client, base_system_prompt, base_user
     elapsed = time.time() - start_time
     print(f"배치 작업 총 소요 시간: {format_time(elapsed)}")
         
-def run_batch_claude_pipeline(df, model_name, client, base_system_prompt, base_user_prompt, shot, sample_map):
+def run_batch_claude_pipeline(df, model_name, client, base_system_prompt, base_user_prompt, shot, fewshot_map, use_raw_format):
     print("배치 작업을 위한 요청 준비 중...")
     start_time = time.time()
     
-    
     batches = []
-    for _, row in df.iterrows():
-        sample = sample_map.get(row['id'])
-        fewshot_question = sample['similar_questions'][0]['question']
-        fewshot_answer = sample['similar_questions'][0]['answer']
-        
-        system_prompt = base_system_prompt.replace("{fewshot_question}", fewshot_question).replace("{fewshot_answer}", fewshot_answer)
-        user_prompt = base_user_prompt.replace("{question}", row['question'])
-        
+    def _prepare_batch_input(row, shot, use_raw_format):
+        id = row["id"]
+        if shot == "0":
+            system_prompt = base_system_prompt
+        else:
+            sample = fewshot_map.get(id)
+            if sample is None:
+                raise ValueError(f"[Fewshot Error] No fewshot example for id: {id}")
+            
+            fewshot_examples = build_fewshot_examples(sample, shot, use_raw_format)
+            system_prompt = base_system_prompt.replace("{fewshot_examples}", fewshot_examples)
+            
+        if use_raw_format:
+            user_prompt = base_user_prompt.replace("{title}", row["title"]).replace("{content}", row["content"])
+        else:
+            user_prompt = base_user_prompt.replace("{question}", row["question"])
+            
         request = Request(
-            custom_id=f"{row['id']}",
+            custom_id=id,
             params=MessageCreateParamsNonStreaming(
                 model=MODEL_NAME_TO_API_ID[model_name],
                 temperature = 0,
-                max_tokens=1024,
+                max_tokens=2048,
                 system = system_prompt,
                 messages=[
                     {"role": "user", "content": user_prompt}
@@ -335,8 +392,14 @@ def run_batch_claude_pipeline(df, model_name, client, base_system_prompt, base_u
             )
         )
         batches.append(request)
+            
+    for _, row in df.iterrows():
+        _prepare_batch_input(row, shot, use_raw_format)
     
-    # batch_input_file = f"data/batch_input_{model_name}.jsonl"
+    # batch_input_file = f"data/batch_input_{model_name}_{shot}.jsonl"
+    # if use_raw_format:
+    #     batch_input_file = batch_input_file.replace(".jsonl", "_raw.jsonl")
+    
     # with open(batch_input_file, 'w', encoding='utf-8') as file:
     #     for item in batches:
     #         json_string = json.dumps(item, ensure_ascii=False)
@@ -381,6 +444,9 @@ def run_batch_claude_pipeline(df, model_name, client, base_system_prompt, base_u
         
         df['generated_answer'] = contents
         batch_output_file = f"data/eval/output_{model_name}_{shot}.json"
+        if use_raw_format:
+            batch_output_file = batch_output_file.replace(".json", "_raw.json")
+        
         df.to_json(batch_output_file, orient='records', force_ascii=False, indent=4)
         print(f"{batch_output_file}")
             
@@ -398,7 +464,11 @@ def process_with_model(df, model_name, shot, use_batch_api, use_raw_format):
     print(f"USE RAW FORMAT: {use_raw_format}")
     
     base_system_prompt, base_user_prompt = get_prompts(model_name, shot, use_raw_format)
-    fewshot_examples_path = "data/training/fewshot_examples.json"
+    if use_raw_format:
+        fewshot_examples_path = "data/training/fewshot_examples_raw.json"
+    else:
+        fewshot_examples_path = "data/training/fewshot_examples.json"
+        
     fewshot_df = pd.read_json(fewshot_examples_path)
     fewshot_map = {row['id']: row for _, row in fewshot_df.iterrows()}
     
@@ -415,7 +485,9 @@ def process_with_model(df, model_name, shot, use_batch_api, use_raw_format):
         df_len = len(df)
         generated_data = []
         start_idx = 0
-        output_path = f"data/eval/output_{model_name}_dynamic_{shot}.json"
+        output_path = f"data/eval/output_{model_name}_{shot}.json"
+        if use_raw_format:
+            output_path = output_path.replace(".json", "_raw.json")
         
         if os.path.exists(output_path):
             with open(output_path, "r", encoding="utf-8") as f:
@@ -425,26 +497,29 @@ def process_with_model(df, model_name, shot, use_batch_api, use_raw_format):
         else:
             print("새로 시작")
         
-        if model_name.startswith("gpt"):
-            model_processor = lambda question, system_prompt: generate_gpt_answer(openai_client, model_name, question, system_prompt, base_user_prompt)
-        elif model_name.startswith("claude"):
-            model_processor = lambda question, system_prompt: generate_claude_answer(anthropic_client, model_name, question, system_prompt, base_user_prompt)
-        elif model_name.startswith("gemini"):
-            model_processor = lambda question, system_prompt: generate_gemini_answer(model_name, question, system_prompt, base_user_prompt)
-        elif model_name.startswith("exaone"):
-            model, tokenizer = load_hf_model_and_tokenizer(model_name, cache_dir)
-            model_processor = lambda question, system_prompt: generate_exaone_answer(model, tokenizer, question, system_prompt, base_user_prompt)
+        model_processor = get_model_processor(model_name)
         
         for i, row in tqdm(df.iloc[start_idx:].iterrows(), total=df_len - start_idx, desc="답변 생성 중"):
-            sample = fewshot_map.get(row['id'])
-            fewshot_question = sample['similar_questions'][0]['question']
-            fewshot_answer = sample['similar_questions'][0]['answer']
+            id = row['id']
+            if shot == "0":
+                system_prompt = base_system_prompt
+            else:
+                sample = fewshot_map.get(id)
+                if sample is None:
+                    raise ValueError(f"[Fewshot Error] No fewshot example for id: {id}")
+                
+                fewshot_examples = build_fewshot_examples(sample, shot, use_raw_format)
+                system_prompt = base_system_prompt.replace("{fewshot_examples}", fewshot_examples)
+                
+            if use_raw_format:
+                user_prompt = base_user_prompt.replace("{title}", row["title"]).replace("{content}", row["content"])
+            else:
+                user_prompt = base_user_prompt.replace("{question}", row["question"])
             
-            system_prompt = base_system_prompt.replace("{fewshot_question}", fewshot_question).replace("{fewshot_answer}", fewshot_answer)
-            raw_output = model_processor(row['question'], system_prompt)
-            cleaned_output = re.sub(r"^\s*(#{1,6})?\s*답변\s*[:：]?\s*\n*", "", raw_output.strip(), flags=re.IGNORECASE)
-
-            df.loc[i, 'generated_answer'] = cleaned_output
+            raw_output = model_processor(system_prompt, user_prompt)
+            processed_output = process_model_output(raw_output)
+            
+            df.loc[i, 'generated_answer'] = processed_output.get("답변", "")
             generated_data.append(df.loc[i].to_dict())
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(generated_data, f, ensure_ascii=False, indent=4)
@@ -454,14 +529,17 @@ def process_with_model(df, model_name, shot, use_batch_api, use_raw_format):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="모델 id 입력")
+    parser = argparse.ArgumentParser(description="답변 생성")
     parser.add_argument("--model_name", type=str, required=True, choices=list(MODEL_NAME_TO_API_ID.keys()))
     parser.add_argument("--shot", type=str, required=True, choices=["0", "1", "3", "6"])
     parser.add_argument("--use_batch_api", action="store_true")
     parser.add_argument("--use_raw_format", action="store_true")
     args = parser.parse_args()
     
-    df = pd.read_json("data/training/test_data.json")
+    if args.use_raw_format:
+        df = pd.read_json("data/training/test_data_raw.json")
+    else:
+        df = pd.read_json("data/training/test_data.json")
     
     process_with_model(df, args.model_name, args.shot, args.use_batch_api, args.use_raw_format)
     

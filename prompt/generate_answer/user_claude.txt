@@ -1,0 +1,6 @@
+다음 입력 데이터는 '반려동물(개, 고양이) 의료 상담' 관련 질문입니다.
+<pet_medical_question>
+{{question}}
+</pet_medical_question>
+
+답변 외의 문장은 포함하지 마세요.
