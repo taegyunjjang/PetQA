@@ -19,7 +19,6 @@ def extract_preprocessed_data(data):
         'ids': [],
         'titles': [],
         'contents': [],
-        'answers': [],
         'preprocessed_questions': [],
         'preprocessed_answers': []
     }
@@ -28,7 +27,6 @@ def extract_preprocessed_data(data):
         extracted_data['ids'].append(item['id'])
         extracted_data['titles'].append(item['title'])
         extracted_data['contents'].append(item['content'])
-        extracted_data['answers'].append(item['answer'])
         extracted_data['preprocessed_questions'].append(item['preprocessed_question'])
         extracted_data['preprocessed_answers'].append(item['preprocessed_answer'])
         
@@ -78,7 +76,6 @@ class SentenceEmbedder:
         return all_embeddings
 
 def build_faiss_index(embeddings):
-    """Faiss 인덱스를 구축합니다."""
     dimension = embeddings.shape[1]
     index = faiss.IndexFlatIP(dimension)  # Inner Product 기반 유사도 검색
     index.add(embeddings)  # 인덱스에 벡터 추가
@@ -97,8 +94,8 @@ def find_similar_questions(test_embeddings, train_embeddings, extracted_train_da
                 "id": extracted_train_data['ids'][idx],
                 "title": extracted_train_data['titles'][idx],
                 "content": extracted_train_data['contents'][idx],
-                "answer": extracted_train_data['answers'][idx],
-                "question": extracted_train_data['preprocessed_questions'][idx],
+                "preprocessed_question": extracted_train_data['preprocessed_questions'][idx],
+                "preprocessed_answer": extracted_train_data['preprocessed_answers'][idx],
                 "similarity_score": float(score)
             }
             similar_items.append(item)
@@ -108,47 +105,10 @@ def find_similar_questions(test_embeddings, train_embeddings, extracted_train_da
     return results
 
 def create_id_to_data_mapping(data):
-    """ID를 키로 하는 데이터 매핑을 생성합니다."""
     id_to_data = {}
     for item in data:
         id_to_data[item['id']] = item
     return id_to_data
-
-def map_fewshot_examples_with_raw_data(fewshot_examples, train_raw_data, test_raw_data):
-    """기존 fewshot 예제에 raw 데이터를 매핑합니다."""
-    train_id_to_data = create_id_to_data_mapping(train_raw_data)
-    test_id_to_data = create_id_to_data_mapping(test_raw_data)
-    
-    updated_results = []
-    
-    for example in fewshot_examples:
-        test_id = example['id']
-        if test_id in test_id_to_data:
-            test_item = test_id_to_data[test_id]
-            
-            result = {
-                "id": test_id,
-                "title": test_item.get('title', ''),
-                "content": test_item.get('content', ''),
-                "answer": test_item.get('answer', ''),
-                "similar_questions": []
-            }
-            
-            # 유사한 질문들에 대해 raw 데이터 매핑
-            for similar in example['similar_questions']:
-                similar_id = similar['id']
-                train_item = train_id_to_data[similar_id]
-                result['similar_questions'].append({
-                    "id": similar_id,
-                    "title": train_item.get('title', ''),
-                    "content": train_item.get('content', ''),
-                    "answer": train_item.get('answer', ''),
-                    "similarity_score": similar['similarity_score']
-                })
-            
-            updated_results.append(result)
-    
-    return updated_results
 
 def main(train_path, test_path, processed_output_path):
     train_data = load_data(train_path)
@@ -180,7 +140,6 @@ def main(train_path, test_path, processed_output_path):
             "id": extracted_test_data['ids'][i],
             "title": extracted_test_data['titles'][i],
             "content": extracted_test_data['contents'][i],
-            "answer": extracted_test_data['answers'][i],
             "preprocessed_question": extracted_test_data['preprocessed_questions'][i],
             "preprocessed_answer": extracted_test_data['preprocessed_answers'][i],
             "similar_questions": similar
@@ -190,8 +149,6 @@ def main(train_path, test_path, processed_output_path):
     os.makedirs(os.path.dirname(processed_output_path), exist_ok=True)
     with open(processed_output_path, 'w', encoding='utf-8') as f:
         json.dump(processed_results, f, ensure_ascii=False, indent=4)
-        
-    
     print(f"Few-shot 예제 저장 완료:")
     print(f"{processed_output_path}")
 
@@ -199,7 +156,7 @@ def main(train_path, test_path, processed_output_path):
 if __name__ == "__main__":
     train_path = "data/training/train.json"
     test_path = "data/training/test.json"
-    output_path = "data/training/fewshot_examples_with_raw_text.json"
+    output_path = "data/training/fewshot_examples.json"
     
     main(train_path, test_path, output_path)
     
