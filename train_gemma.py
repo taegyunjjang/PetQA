@@ -20,12 +20,16 @@ def setup_logging():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     return logging.getLogger(__name__)
 
-def load_environment():
+def load_environment(model_name, use_raw_format):
     load_dotenv()
-    wandb.login(key=os.getenv("WANDB_API_KEY"))
     
+    suffix = "_raw" if use_raw_format else ""
     output_dir = "./data/outputs"
     train_dir = "./data/training"
+    checkpoint_dir = os.path.join(output_dir, f"{model_name}_petqa{suffix}")
+    
+    os.environ["WANDB_DIR"] = checkpoint_dir
+    wandb.login(key=os.getenv("WANDB_API_KEY"))
 
     train_path = os.path.join(train_dir, f"train.json")
     validation_path = os.path.join(train_dir, f"validation.json")
@@ -37,6 +41,7 @@ def load_environment():
     
     return {
         "output_dir": output_dir,
+        "checkpoint_dir": checkpoint_dir,
         "data_files": data_files
     }
 
@@ -70,7 +75,7 @@ def load_model_tokenizer(model_name, logger):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # tokenizer.model_max_length = model.config.text_config.max_position_embeddings  # Gemma3
+    # tokenizer.model_max_length = model.config.text_config.max_position_embeddings
     
     return model, tokenizer
 
@@ -95,14 +100,13 @@ def create_prompt_function(tokenizer, use_raw_format):
     
     return generate_prompt
 
-def setup_training_args(output_dir, train_data, use_raw_format):
+def setup_training_args(output_dir, train_data):
     num_train_epochs = 3
     steps_per_epoch = len(train_data) // (1 * 4)  # batch_size * gradient_accumulation_steps
     total_steps = steps_per_epoch * num_train_epochs
-    suffix = "_raw" if use_raw_format else ""
     
     training_args = TrainingArguments(
-        output_dir=f"{output_dir}{suffix}",
+        output_dir=output_dir,
         num_train_epochs=num_train_epochs,
         per_device_train_batch_size=1,
         per_device_eval_batch_size=1,
@@ -114,7 +118,7 @@ def setup_training_args(output_dir, train_data, use_raw_format):
         weight_decay=0.01,
         fp16=False,
         bf16=True,
-        logging_steps=50,
+        logging_steps=100,
         eval_strategy="steps",
         eval_steps=500,
         save_strategy="steps",
@@ -141,20 +145,18 @@ def train_model(model, train_data, validation_data, training_args, formatting_fu
     logger.info("학습 시작...")
     trainer.train()
     logger.info("학습 완료")
-    
     return trainer
 
-def save_best_model(trainer, output_dir, tokenizer, use_raw_format):
-    suffix = "_raw" if use_raw_format else ""
-    best_model_path = os.path.join(output_dir, f"best_model{suffix}")
+def save_best_model(trainer, output_dir, tokenizer):
+    best_model_path = os.path.join(output_dir, f"best_model")
     trainer.save_model(best_model_path)
     tokenizer.save_pretrained(best_model_path)
     return best_model_path
 
 def main(model_name, use_raw_format):
     logger = setup_logging()
-    
-    env = load_environment()
+
+    env = load_environment(model_name, use_raw_format)
     
     wandb.init(
         project="PetQA",
@@ -175,7 +177,7 @@ def main(model_name, use_raw_format):
     
     generate_prompt = create_prompt_function(tokenizer, use_raw_format)
     
-    training_args = setup_training_args(env["output_dir"], train_data, use_raw_format)
+    training_args = setup_training_args(env["checkpoint_dir"], train_data)
     
     trainer = train_model(
         model, 
@@ -186,7 +188,7 @@ def main(model_name, use_raw_format):
         logger
     )
     
-    best_model_path = save_best_model(trainer, env["output_dir"], tokenizer, use_raw_format)
+    best_model_path = save_best_model(trainer, env["checkpoint_dir"], tokenizer)
     print(f"best_model_path: {best_model_path}")
     logger.info("프로세스 완료")
 
