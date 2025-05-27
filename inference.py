@@ -96,8 +96,8 @@ def load_results(output_path):
         print("새로 시작")
     return results, start_idx
 
-def prepare_prompts(test_data, start_idx, tokenizer, use_raw_format, model_name, shot):
-    base_system_prompt, base_user_prompt = get_prompts(model_name, shot, use_raw_format)
+def prepare_prompts(test_data, start_idx, tokenizer, use_raw_format, shot):
+    base_system_prompt, base_user_prompt = get_prompts(shot, use_raw_format)
     
     prompts = []
     data_to_process = test_data[start_idx:]
@@ -175,8 +175,9 @@ def generate_answers_sequential(
     )
     
     sampling_params = SamplingParams(
-        temperature=0,
+        temperature=0.7,
         max_tokens=2048,
+        repetition_penalty=1.2,
         stop_token_ids=[tokenizer.eos_token_id] if tokenizer.eos_token_id else None
     )
     
