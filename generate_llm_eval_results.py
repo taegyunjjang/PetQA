@@ -1,3 +1,4 @@
+"""judge LLM이 평가할 json 파일을 생성"""
 import os
 import re
 import json
@@ -7,16 +8,17 @@ import pandas as pd
 from tqdm import tqdm
 import openai
 
+
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 MODEL_MAPPING = {
     "gpt-4o-mini": "gpt-4o-mini-2024-07-18",
-    "gpt-4.1-nano": "gpt-4.1-nano-2025-04-14",
     "claude-3-haiku": "claude-3-haiku-20240307",
     "gemini-2.0-flash": "gemini-2.0-flash-001",
-    "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct"
+    "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct",
+    "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct"
 }
 
 
@@ -69,10 +71,16 @@ def parse_json_safely(json_str):
 
 def get_file_paths(model_name, shot, use_raw_format):
     suffix = "_raw" if use_raw_format else ""
+    input_path = f"data/eval/output_{model_name}_{shot}{suffix}.json"
+    score_path = f"data/llm_eval/score_results_{model_name}_{shot}{suffix}.json"
+    pairwise_path = f"data/llm_eval/pairwise_results_{model_name}_{shot}{suffix}.json"
+    os.makedirs(os.path.dirname(score_path), exist_ok=True)
+    os.makedirs(os.path.dirname(pairwise_path), exist_ok=True)
+    
     paths = {
-        "input": f"data/eval/output_{model_name}_{shot}{suffix}.json",
-        "score": f"data/llm_eval/score_results_{model_name}_{shot}{suffix}.json",
-        "pairwise": f"data/llm_eval/pairwise_results_{model_name}_{shot}{suffix}.json"
+        "input": input_path,
+        "score": score_path,
+        "pairwise": pairwise_path
     }
     return paths
 
@@ -89,11 +97,11 @@ def evaluate_response(evaluation_type, row_data, prompts, output_path, use_raw_f
     if use_raw_format:
         title = row_data.get("title", "")
         content = row_data.get("content", "")
-        gold_answer = row_data.get("answer", "")
+        gold_answer = row_data.get("preprocessed_answer", "")
         generated_answer = row_data.get("generated_answer", "")
     else:
-        question = row_data.get("question", "")
-        gold_answer = row_data.get("answer", "")
+        question = row_data.get("preprocessed_question", "")
+        gold_answer = row_data.get("preprocessed_answer", "")
         generated_answer = row_data.get("generated_answer", "")
         
     if evaluation_type == "score":
@@ -153,7 +161,7 @@ def evaluate_response(evaluation_type, row_data, prompts, output_path, use_raw_f
     return results
 
 def generate_evaluations(input_path, score_output_path, pairwise_output_path, use_raw_format):
-    df = pd.read_json(input_path).head(500)
+    df = pd.read_json(input_path).head(200)
     df_len = len(df)
     print(f"평가 파일: {input_path}")
     print(f"평가 데이터 수: {df_len}")

@@ -11,7 +11,6 @@ from transformers import TrainingArguments
 from datasets import load_dataset
 from dotenv import load_dotenv
 from trl import SFTTrainer
-import json
 
 
 MODEL_MAPPING = {
@@ -127,7 +126,7 @@ def setup_training_args(checkpoint_dir, train_data):
         eval_strategy="steps",
         eval_steps=500,
         save_strategy="steps",
-        save_steps=1000,
+        save_steps=500,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
@@ -243,7 +242,7 @@ def cleanup_memory_and_load_best_model(trainer, checkpoint_dir, tokenizer, logge
         if os.path.exists(config_src):
             shutil.copy2(config_src, config_dst)
         
-        logger.info(f"✅ 변환된 모델 저장 완료: {converted_model_path}")
+        logger.info(f"변환된 모델 저장 완료: {converted_model_path}")
         
         return converted_model_path
         

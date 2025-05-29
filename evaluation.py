@@ -1,5 +1,5 @@
 from colorama import Fore, Back, Style
-import os
+import logging
 import time
 import pandas as pd
 import argparse
@@ -65,42 +65,6 @@ def compute_avg_bertscore(gold_answers, generated_answers):
     avg_bertscore_f1 = sum(total_scores) / len(generated_answers)
     print(f"Avg BERTScore F1: {Fore.RED}{avg_bertscore_f1:.3f}{Style.RESET_ALL}")
     
-def compute_avg_bleurt(gold_answers, generated_answers):
-    from bleurt import score
-    checkpoint = "bleurt/BLEURT-20"  # 다국어 모델: "RemBERT"
-    scorer = score.BleurtScorer(checkpoint)
-    
-    valid_pairs = [(g, p) for g, p in zip(gold_answers, generated_answers) if p != ""]
-    valid_gold, valid_gen = zip(*valid_pairs)
-    
-    scores = scorer.score(references=valid_gold, candidates=valid_gen)
-
-    empty_count = sum(1 for p in generated_answers if p == "")
-    total_scores = scores + [0] * empty_count
-    
-    avg_bleurt_score = sum(total_scores) / len(generated_answers)
-    print(f"Avg BLEURT Score: {Fore.RED}{avg_bleurt_score:.3f}{Style.RESET_ALL}")
-
-def compute_avg_bartscore(gold_answers, generated_answers):
-    from BARTScore.bart_score import BARTScorer
-    checkpoint = "gogamza/kobart-base-v2"
-    bart_scorer = BARTScorer(checkpoint=checkpoint, device="cuda:1")
-    
-    valid_pairs = [(g, p) for g, p in zip(gold_answers, generated_answers) if p != ""]
-    valid_gold, valid_gen = zip(*valid_pairs)
-    
-    precision = bart_scorer.score(valid_gold, valid_gen, batch_size=1)
-    recall = bart_scorer.score(valid_gen, valid_gold, batch_size=1)
-    
-    empty_count = sum(1 for p in generated_answers if p == "")
-    total_precision = precision + [0] * empty_count
-    total_recall = recall + [0] * empty_count
-    
-    avg_precision = sum(total_precision) / len(generated_answers)
-    avg_recall = sum(total_recall) / len(generated_answers)
-    avg_f1 = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall)
-    print(f"Avg BARTScore F1: {Fore.RED}{avg_f1:.3f}{Style.RESET_ALL}")
-
 def load_answer(file_path):
     df = pd.read_json(file_path)
     gold_answers = df['preprocessed_answer']
@@ -116,8 +80,6 @@ def evaluate_answer(file_path):
     
     compute_avg_rougeL(gold_answers, generated_answers)
     compute_avg_bertscore(list(gold_answers), list(generated_answers))
-    compute_avg_bleurt(list(gold_answers), list(generated_answers))
-    compute_avg_bartscore(list(gold_answers), list(generated_answers))
     
     elapsed = time.time() - start_time
     print(f"평가 작업 총 소요 시간: {format_time(elapsed)}")
