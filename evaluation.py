@@ -1,8 +1,9 @@
-from colorama import Fore, Back, Style
-import logging
+from colorama import Fore, Style
 import time
 import pandas as pd
 import argparse
+import sys
+sys.setrecursionlimit(10000)
 
 
 MODEL_MAPPING = {
@@ -12,7 +13,8 @@ MODEL_MAPPING = {
     "gemini-2.0-flash": "gemini-2.0-flash-001",
     "gemma-3-4b": "google/gemma-3-4b-it",
     "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
-    "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct"
+    "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct",
+    "hcx-seed-3b": "naver-hyperclovax/HyperCLOVAX-SEED-Vision-Instruct-3B",
 }
 
 def format_time(seconds):
@@ -31,31 +33,40 @@ def load_prompt(file_path):
     with open(file_path, encoding="utf-8") as file:
         return file.read()
 
-def compute_avg_rougeL(gold_answers, generated_answers):
+def load_answer(file_path):
+    df = pd.read_json(file_path)
+    generated_answers = df['generated_answer']
+    gold_answers = df['preprocessed_answer']
+    return generated_answers, gold_answers
+
+def compute_avg_rougeL(generated_answers, gold_answers):
     from rouge import Rouge
+    from konlpy.tag import Okt
+    okt = Okt()
     rouge = Rouge()
+    
+    # 형태소 단위로 계산
+    generated_answers_morphs = [" ".join(okt.morphs(g)) for g in generated_answers]
+    gold_answers_morphs = [" ".join(okt.morphs(p)) for p in gold_answers]
+
     scores = []
-    for g, p in zip(gold_answers, generated_answers):
-        if p == "":
+    for g, p in zip(generated_answers_morphs, gold_answers_morphs):
+        if g == "":
             scores.append(0)
         else:
-            if len(g.split()) > 1000 or len(p.split()) > 1000:
-                print(f"Gold or Predicted answer too long...{g}")
-                scores.append(0)
             scores.append(rouge.get_scores(g, p)[0]['rouge-l']['f'])
     
     avg_rougeL_f1 = sum(scores) / len(scores)
     print(f"Avg ROUGE-L F1: {Fore.RED}{avg_rougeL_f1:.3f}{Style.RESET_ALL}")
     
-def compute_avg_bertscore(gold_answers, generated_answers):
+def compute_avg_bertscore(generated_answers, gold_answers):
     from bert_score import score
-    valid_pairs = [(g, p) for g, p in zip(gold_answers, generated_answers) if p != ""]
+    valid_pairs = [(g, p) for g, p in zip(generated_answers, gold_answers) if p != ""]
         
-    valid_gold, valid_gen = zip(*valid_pairs)
+    valid_gen, valid_gold = zip(*valid_pairs)
     _, _, F1 = score(
         valid_gen,
-        valid_gold,
-        device="cuda:1",
+        valid_gold, 
         lang="ko"  # 다국어 모델: "bert-base-multilingual-cased"
     )
     
@@ -65,20 +76,15 @@ def compute_avg_bertscore(gold_answers, generated_answers):
     avg_bertscore_f1 = sum(total_scores) / len(generated_answers)
     print(f"Avg BERTScore F1: {Fore.RED}{avg_bertscore_f1:.3f}{Style.RESET_ALL}")
     
-def load_answer(file_path):
-    df = pd.read_json(file_path)
-    gold_answers = df['preprocessed_answer']
-    generated_answers = df['generated_answer']
-    return gold_answers, generated_answers
 
 def evaluate_answer(file_path):
     print(f"평가 파일: {file_path}")
     start_time = time.time()
     
-    gold_answers, generated_answers = load_answer(file_path)
+    generated_answers, gold_answers = load_answer(file_path)
     print(f"평가 개수: {len(gold_answers)}건")
     
-    compute_avg_rougeL(gold_answers, generated_answers)
+    compute_avg_rougeL(generated_answers, gold_answers)
     compute_avg_bertscore(list(gold_answers), list(generated_answers))
     
     elapsed = time.time() - start_time
@@ -88,14 +94,14 @@ def evaluate_answer(file_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="평가용 데이터 입력")
     parser.add_argument("--model_name", type=str, required=True, choices=list(MODEL_MAPPING.keys()))
-    parser.add_argument("--use_finetuned_model", action="store_true")
     parser.add_argument("--shot", type=str, required=True, choices=["0", "1", "3", "6"])
+    parser.add_argument("--use_finetuned_model", action="store_true")
     parser.add_argument("--use_raw_format", action="store_true")
     args = parser.parse_args()
     
     ft = "_petqa" if args.use_finetuned_model else ""
-    suffix = "_raw" if args.use_raw_format else ""
-    file_path = f"data/eval/output_{args.model_name}{ft}_{args.shot}{suffix}.json"
+    suffix = "raw" if args.use_raw_format else "preprocessed"
+    file_path = f"data/eval/output_{args.model_name}{ft}_{args.shot}_{suffix}.json"
     
     evaluate_answer(file_path)
     
