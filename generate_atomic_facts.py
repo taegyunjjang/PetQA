@@ -20,6 +20,8 @@ MODEL_MAPPING = {
     "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
     "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct",
     "hcx-seed-3b": "naver-hyperclovax/HyperCLOVAX-SEED-Vision-Instruct-3B",
+    
+    # judge model
     "qwen-2.5-72b": "Qwen/Qwen2.5-72B-Instruct",
     "exaone-3.5-32b": "LGAI-EXAONE/EXAONE-3.5-32B-Instruct",
 }
@@ -37,21 +39,26 @@ def setup_logging():
     return logging.getLogger(__name__)
 
 def load_environment(args):
-    model_name = args.model_name
-    shot = args.shot
-    use_raw_format = args.use_raw_format
-    use_fintuned_model = args.use_finetuned_model
+    MODEL_NAME = args.model_name
+    SHOT = args.shot
+    USE_RAW_FORMAT = args.use_raw_format
+    USE_FINETUNED_MODEL = args.use_finetuned_model
+    EXPERT_TYPE = args.expert_type
+    ANIMAL_TYPE = args.animal_type
     
-    suffix = "raw" if use_raw_format else "preprocessed"
-    ft = "_petqa" if use_fintuned_model else ""
     
-    input_path = f"data/eval/output_{model_name}{ft}_{shot}_{suffix}.json"
-    output_path = f"data/atomic_facts/{model_name}{ft}_{shot}_{suffix}.json"
+    SUFFIX = "raw" if USE_RAW_FORMAT else "preprocessed"
+    FT = "_petqa" if USE_FINETUNED_MODEL else ""
+    
+    
+    input_path = f"data/TEST/{EXPERT_TYPE}/{ANIMAL_TYPE}/output_{MODEL_NAME}{FT}_{SHOT}_{SUFFIX}.json"
     if args.prepare_gold_facts:
-        output_path = f"data/atomic_facts/gold_facts.json"
+        input_path = f"data/TEST/{EXPERT_TYPE}/{ANIMAL_TYPE}/{EXPERT_TYPE}_{ANIMAL_TYPE}.json"
+    output_path = f"data/TEST/{EXPERT_TYPE}/{ANIMAL_TYPE}/atomic_facts/{MODEL_NAME}{FT}_{SHOT}_{SUFFIX}.json"
+    if args.prepare_gold_facts:
+        output_path = f"data/TEST/{EXPERT_TYPE}/{ANIMAL_TYPE}/atomic_facts/gold_facts.json"
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    test_path = f"data/training/test.json"
     
     system_prompt_path = f"prompt/system_atomic.txt"
     user_prompt_path = f"prompt/user_atomic.txt"
@@ -59,7 +66,6 @@ def load_environment(args):
     return {
         "input_path": input_path,
         "output_path": output_path,
-        "test_path": test_path,
         "system_prompt_path": system_prompt_path,
         "user_prompt_path": user_prompt_path,
     }
@@ -79,8 +85,8 @@ def get_prompts(env):
     user_prompt = load_prompt(env["user_prompt_path"])
     return system_prompt, user_prompt
 
-def load_results(env, logger, prepare_gold_facts):
-    output_path = env["gold_facts_path"] if prepare_gold_facts else env["output_path"]
+def load_results(env, logger):
+    output_path = env["output_path"]
     if os.path.exists(output_path):
         with open(output_path, "r", encoding="utf-8") as f:
             results = json.load(f)
@@ -194,7 +200,7 @@ def generate_atomic_facts(
         results.append(result)
         
         with open(env["output_path"], "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=4)
+            json.dump(results, f, ensure_ascii=False, indent=2)
 
     logger.info("atomic facts 생성 완료")
 
@@ -205,7 +211,6 @@ def main(args):
     
     if args.prepare_gold_facts:
         logger.info(f"PREPARE GOLD FACTS: {args.prepare_gold_facts}")
-        logger.info(f"TEST PATH: {env['test_path']}")
         logger.info(f"GOLD FACTS PATH: {env['output_path']}")
         
     else:
@@ -215,7 +220,7 @@ def main(args):
     
     llm, tokenizer = load_model_and_tokenizer(args.judge_model_name)
     ids, answers = load_df(env["input_path"], args.prepare_gold_facts)
-    results, start_idx = load_results(env, logger, args.prepare_gold_facts)
+    results, start_idx = load_results(env, logger)
     
     generate_atomic_facts(
         llm, tokenizer, ids, answers, results, start_idx, 
@@ -225,12 +230,14 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="generate atomic facts")
-    parser.add_argument("--model_name", type=str, required=True, choices=list(MODEL_MAPPING.keys()))
-    parser.add_argument("--shot", type=str, required=True, choices=["0", "1", "3", "6"])
+    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="gpt-4o-mini")
+    parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
     parser.add_argument("--use_finetuned_model", action="store_true")
     parser.add_argument("--use_raw_format", action="store_true")
     parser.add_argument("--prepare_gold_facts", action="store_true")
-    parser.add_argument("--judge_model_name", type=str, default="qwen-2.5-72b", choices=list(MODEL_MAPPING.keys()))
+    parser.add_argument("--expert_type", choices=["expert", "nonexpert"], default="expert")
+    parser.add_argument("--animal_type", choices=["cat", "dog"], default="dog")
+    parser.add_argument("--judge_model_name", type=str, default="exaone-3.5-32b", choices=list(MODEL_MAPPING.keys()))
     args = parser.parse_args()
     
     main(args)
