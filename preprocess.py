@@ -1,110 +1,95 @@
 import pandas as pd
 import time
 import re
-import os
 import json
 from tqdm import tqdm
 from copy import deepcopy
+import argparse
+import sys
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..'))
+sys.path.append(project_root)
+from utils.utils import (
+    MODEL_MAPPING, format_time, setup_logging, save_json, load_json,
+    load_results, load_prompt, load_environment
+)
 
 import openai
 from dotenv import load_dotenv
-
-
-MAX_WAIT_TIME = 24 * 60 * 60  
+import tiktoken
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 
-with open("prompt/filtering_system.txt", "r", encoding="utf-8") as file:
-    system_prompt = file.read()
+def num_tokens_from_messages(messages, model="gpt-4o-mini"):
+    """
+    메시지 목록에서 토큰 수를 반환합니다.
+    (OpenAI Cookbook 예제 기반)
+    """
+    encoding = tiktoken.encoding_for_model(model)
     
-with open("prompt/filtering_user.txt", "r", encoding="utf-8") as file:
-    base_user_prompt = file.read()
-    
-with open("prompt/cleaning_system.txt", "r", encoding="utf-8") as file:
-    system_prompt = file.read()
-    
-with open("prompt/cleaning_user.txt", "r", encoding="utf-8") as file:
-    base_user_prompt = file.read()
-
-
-def format_time(seconds):
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = seconds % 60
-    
-    if hours > 0:
-        return f"처리 시간: {hours}시간 {minutes}분 {seconds}초"
-    elif minutes > 0:
-        return f"처리 시간: {minutes}분 {seconds}초"
-    else:
-        return f"처리 시간: {seconds}초"
-
-def prepare_qna_data(df):
-    def _extract_text_data(df):
-        extracted_df = df[(df['question_photo'] == "['사진 없음']") &
-                        (df['answer_photo'] == "['사진 없음']") &
-                        (df['question_video'] == '동영상 없음') &
-                        (df['answer_video'] == '동영상 없음')]
-        return extracted_df
-    
-    initial_row_count = len(df)
-    df = _extract_text_data(df)
-    extracted_row_count = len(df)
-    df['id'] = list(range(len(df)))
-    print(f"원본 데이터 크기: {initial_row_count}")
-    print(f"추출된 데이터 크기: {extracted_row_count}")
-    
-    return df[['id', '제목', '본문', '답변', 'answer_date']]
-
-def is_relevant_sample(title, text, answer):
-    user_prompt = base_user_prompt.replace("{title}", title).replace("{text}", str(text)).replace("{answer}", answer)
-    
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}],
-        seed=42
-    )
-    
-    return response.choices[0].message.content.strip()
-
-def filtering(df):
-    output_path = "data/filtered_data.json"
-    if os.path.exists(output_path):
-        with open(output_path, "r", encoding="utf-8") as f:
-            filtered_data = json.load(f)
-        start_idx = len(filtered_data)
-        print(f"{start_idx}개까지 처리됨. 이어서 시작")
-    else:
-        filtered_data = []
-        start_idx = 0
-        print("새로 시작")
-
-    start_time = time.time()
-
-    df_len = len(df)
-    for i, row in tqdm(df.iloc[start_idx:].iterrows(), total=df_len - start_idx, desc="Filtering"):
-        df.loc[i, 'is_relevant'] = is_relevant_sample(row['제목'], row['본문'], row['답변'])
-        filtered_data.append(df.loc[i].fillna("").to_dict())
+    tokens_per_message = 3
+    tokens_per_name = 1
         
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(filtered_data, f, ensure_ascii=False, indent=4)
+    num_tokens = 0
+    for message in messages:
+        num_tokens += tokens_per_message
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += tokens_per_name
+    num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
+    return num_tokens
 
-    initial_row_count = len(df)
-    df = df[df['is_relevant'] == 'True']
-    print(f"필터링된 데이터 개수: {initial_row_count - len(df)}개")
-    print(f"클리닝할 데이터 개수: {len(df)}개")
+def call_openai_api(messages, model_name="gpt-4o-mini"):
+    response = client.chat.completions.create(
+        model=MODEL_MAPPING[model_name],
+        messages=messages,
+        seed=42,
+        response_format={
+            "type": "json_schema", 
+            "json_schema": {
+                "name": "preprocess_question_and_answers",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "preprocessed_question": {
+                            "type": "string"
+                        },
+                        "preprocessed_answers": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": ["preprocessed_question", "preprocessed_answers"],
+                    "additionalProperties": False
+                },
+                "strict": True
+            }
+        }
+    )
+    json_string = response.choices[0].message.content.strip()
     
-    elapsed = time.time() - start_time
-    print(f"필터링 총 소요 시간: {format_time(elapsed)}")
+    prompt_tokens_used = response.usage.prompt_tokens
+    completion_tokens_used = response.usage.completion_tokens
+    total_tokens_used = response.usage.total_tokens
+
+    print(f"API 응답 - 실제 사용된 프롬프트 토큰: {prompt_tokens_used} 토큰")
+    print(f"API 응답 - 실제 사용된 완료 토큰: {completion_tokens_used} 토큰")
+    print(f"API 응답 - 총 사용된 토큰: {total_tokens_used} 토큰")
     
-    print(f"필터링 완료: {output_path}")
-    
-    return df
+    try:
+        return json.loads(json_string)
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        print(f"Received content: {json_string}")
+        # 에러 발생 시 적절한 에러 처리 또는 기본값 반환
+        return {"preprocessed_question": "", "preprocessed_answers": []}
 
 def remove_common_greetings(text):
     if not isinstance(text, str):
@@ -130,169 +115,91 @@ def remove_common_greetings(text):
     
     return text
 
-def run_batch_pipeline(df):
-    print("배치 작업을 위한 입력 파일 생성 중...")
-    init_template = {
-        "custom_id": None,
-        "method": "POST", 
-        "url": "/v1/chat/completions",
-        "body": {"model": "gpt-4o-mini", 
-                "messages":[
-                    {"role": "system", "content": system_prompt},
-                    ],
-                "max_tokens": 1000
-                }
-        }
-    
-    batches = []
-    def _prepare_batch_input(title, text, answer, i):
-        user_prompt = base_user_prompt.replace("{title}", title).replace("{text}", str(text)).replace("{answer}", answer)
-        temp = deepcopy(init_template)
-        temp['custom_id'] = f'{i}'
-        temp['body']['messages'].append({"role": "user", "content": user_prompt})
-        batches.append(temp)
-        
-    for _, row in df.iterrows():
-        _prepare_batch_input(row['제목'], row['본문'], row['답변'], row['id'])
-        
-    batch_input_file = "data/batch_input.jsonl"
-    with open(batch_input_file, 'w') as file:
-        for item in batches:
-            json_string = json.dumps(item, ensure_ascii=False)
-            file.write(json_string + '\n')
-    
-    print("OpenAI 서버에 입력 파일 업로드 중...")
-    batch_input_file = client.files.create(
-        file=open(batch_input_file, "rb"),
-        purpose="batch"
-    )
-
-    batch_input_file_id = batch_input_file.id
-    batch_job = client.batches.create(
-        input_file_id=batch_input_file_id,
-        endpoint="/v1/chat/completions",
-        completion_window="24h",
-        metadata={
-            "description": "preprocessing"
-        }
-    )
-    print(f"ID: {batch_job.id}")
-    
+def filtering(df, env, logger):
     start_time = time.time()
-    status_transition = False
-    try:
-        while True:
-            batch = client.batches.retrieve(batch_job.id)
-            
-            if batch.status == "validating":
-                print("유효성 검사 중...")
-                
-            if not status_transition and batch.status == "in_progress":
-                print("배치 작업 진행 중...")
-                status_transition = True
-                
-            if batch.status == "completed":
-                print("배치 작업이 성공적으로 완료되었습니다.")
-                break
-            
-            if time.time() - start_time > MAX_WAIT_TIME:
-                print(f"최대 대기 시간: {MAX_WAIT_TIME//3600}시간을 초과했습니다.")
-                break
-            
-            if batch.status == "failed":
-                print("배치 작업이 실패했습니다.")
-                print(batch.incomplete_details)
-                break
-            
-            # 일부 실패 시 (status는 completed지만 error_file_id가 존재)
-            if batch.error_file_id:
-                print("일부 배치 작업이 실패했습니다.")
-                error_file = client.files.content(batch.error_file_id)
-                with open("error_file.jsonl", "wb") as f:
-                    f.write(error_file)
-                print(error_file)
-            
-            # 과도한 요청 방지
-            time.sleep(30)
+    filtered_data, start_idx = load_results(env["filtered_data_path"])
+    system_prompt = load_prompt(env["system_filtering_prompt_path"])
+    base_user_prompt = load_prompt(env["user_preprocessing_prompt_path"])
+    
+    df_to_process = df.iloc[start_idx:]
+    for _, row in tqdm(df_to_process.iterrows(), total=len(df_to_process), desc="Filtering"):
+        title = row.get('title', '')
+        content = row.get('content', '')
+        answer = row.get('answer', '')
+        user_prompt = base_user_prompt.format(title=title, content=content, answer=answer)
         
-        output_file_id = batch.output_file_id
-        file_response = client.files.content(output_file_id).content
+        is_relevant = call_openai_api(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
         
-        batch_output_file = "data/batch_output_filtering.jsonl"
-        with open(batch_output_file, "wb") as f:
-            f.write(file_response)
-            
-    except Exception as e:
-        print(f"오류 발생: {e}")
-        
+        current_item = row.fillna("").to_dict()
+        current_item['is_relevant'] = is_relevant
+        filtered_data.append(current_item)
+        save_json(filtered_data, env["filtered_data_path"])
+
+    relevant_count = sum(1 for item in filtered_data if item.get('is_relevant') == 'True')
+    print(f"총 원본 데이터 개수: {len(df)}개")
+    print(f"필터링된 데이터 개수: {len(df) - relevant_count}개")
+    print(f"클리닝할 데이터 개수: {relevant_count}개")
     elapsed = time.time() - start_time
-    print(f"배치 작업 총 소요 시간: {format_time(elapsed)}")
-        
-    return batch_output_file
+    print(f"필터링 총 소요 시간: {format_time(elapsed)}")
+    logger.info(f"필터링 완료")
 
-def cleaning(df):
-    df['답변'] = df['답변'].apply(remove_common_greetings)
+def cleaning(df, env, logger):
+    start_time = time.time()
+    cleaned_data, start_idx = load_results(env["cleaned_data_path"])
+    system_prompt = load_prompt(env["system_cleaning_prompt_path"])
+    base_user_prompt = load_prompt(env["user_preprocessing_prompt_path"])
     
-    # Batch API 활용
-    batch_output_file = run_batch_pipeline(df)
-    
-    cleaned_questions = []
-    cleaned_answers = []
-    
-    with open(batch_output_file, "r", encoding="utf-8") as f:
-        for line in f:
-            data = json.loads(line)
-            content = data["response"]["body"]["choices"][0]["message"]["content"]
-            
-            question_match = re.search(r"클리닝된 질문:\s*(.+)", content)
-            answer_match = re.search(r"클리닝된 답변:\s*(.+)", content)
-            
-            cleaned_question = question_match.group(1).strip() if question_match else ""
-            cleaned_question = "" if pd.isna(cleaned_question) else cleaned_question
-            cleaned_answer = answer_match.group(1).strip() if answer_match else ""
-            cleaned_answer = "" if pd.isna(cleaned_answer) else cleaned_answer
-            
-            cleaned_questions.append(cleaned_question)
-            cleaned_answers.append(cleaned_answer)
+    relevant_items_to_process = df.iloc[start_idx:].to_dict('records')
+    for item in tqdm(relevant_items_to_process, total=len(relevant_items_to_process), desc="Cleaning"):
+        title = item.get('title', '')
+        content = item.get('content', '')
+        raw_answers = item.get('answers', [])
+        answer_texts = [ans['answer'] for ans in raw_answers]
+        formatted_answers = "\n".join([f"- {i+1}. {ans_text}" for i, ans_text in enumerate(answer_texts)])
 
-    df['cleaned_question'] = cleaned_questions
-    df['cleaned_answer'] = cleaned_answers
+        user_prompt = base_user_prompt.format(title=title, content=content, answers=formatted_answers)
+        cleaned_qna = call_openai_api(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        # print(cleaned_qna)
+        preprocessed_question = cleaned_qna.get('preprocessed_question', '')
+        preprocessed_answers = cleaned_qna.get('preprocessed_answers', [])
 
-    cleaned_data_output_path = "data/cleaned_data.json"
-    df.to_json(cleaned_data_output_path, orient='records', force_ascii=False, indent=4)
-    print(f"클리닝 완료: {cleaned_data_output_path}")
-    
-    df['question'] = df['cleaned_question']
-    df['answer'] = df['cleaned_answer']
-    df = df[['id', 'question', 'answer', 'answer_date']]
-    df = df[~((df['question'] == "") | (df['answer'] == ""))]
-    preprocessed_df = df[['id', 'question', 'answer', 'answer_date']]
 
-    preprocessed_data_output_path = "data/preprocessed_data.json"
-    preprocessed_df.to_json(preprocessed_data_output_path, orient='records', force_ascii=False, indent=4)
-    print(f"전처리 완료: {preprocessed_data_output_path}")
+        cleaned_item = deepcopy(item)
+        cleaned_item['preprocessed_question'] = preprocessed_question
+        cleaned_item['preprocessed_answers'] = preprocessed_answers
+        cleaned_data.append(cleaned_item)
+        save_json(cleaned_data, env["cleaned_data_path"])
     
-def preprocess():
-    if not os.path.exists("data"):
-        os.makedirs("data")
+    elapsed = time.time() - start_time
+    print(f"클리닝 총 소요 시간: {format_time(elapsed)}")
+    logger.info(f"클리닝 완료")
     
-    if not os.path.exists("prompt"):
-        os.makedirs("prompt")
-
-    raw_data_path = "data/med_expert.csv"
-    df = pd.read_csv(raw_data_path, encoding='utf-8')
     
-    extracted_df = prepare_qna_data(df)
-    filtered_df = filtering(extracted_df)
-    
-    ''' 클리닝만 실행 '''
-    # filtered_data_path = "data/filtered_data.json"
-    # filtered_df = pd.read_json(filtered_data_path, encoding='utf-8')
-    # filtered_df = filtered_df[filtered_df['is_relevant'] == 'True']
-    
-    cleaning(filtered_df)
-    
-
 if __name__ == "__main__":
-    preprocess()
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="cleaning", choices=["filtering", "cleaning"])
+    args = parser.parse_args()
+    
+    env = load_environment()
+    df = pd.read_json(env["raw_data_path"], encoding='utf-8')
+    logger = setup_logging()
+    logger.info(f"MODE: {args.mode}")
+    logger.info(f"RAW DATA PATH: {env['raw_data_path']}")
+    
+    if args.mode == "filtering":
+        logger.info(f"FILTERED DATA PATH: {env['filtered_data_path']}")
+        filtering(df, env, logger)
+        
+    elif args.mode == "cleaning":
+        logger.info(f"CLEANED DATA PATH: {env['cleaned_data_path']}")
+        cleaning(df, env, logger)
