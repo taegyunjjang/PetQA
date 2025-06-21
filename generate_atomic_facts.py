@@ -8,7 +8,7 @@ from vllm import LLM, SamplingParams
 import torch
 import logging
 import re
-from blocker_numpy import blocker
+from etc.blocker_numpy import blocker
 
 
 MODEL_MAPPING = {

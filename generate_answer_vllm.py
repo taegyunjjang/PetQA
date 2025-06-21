@@ -10,7 +10,7 @@ from vllm import LLM, SamplingParams
 import torch
 import logging
 
-from blocker_numpy import blocker
+from etc.blocker_numpy import blocker
 
 
 MODEL_MAPPING = {
