@@ -1,0 +1,3 @@
+질문 제목: {title}
+질문 본문: {content}
+답변: {answer}

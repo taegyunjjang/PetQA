@@ -1,4 +1,3 @@
-import pandas as pd
 import time
 import re
 import json
@@ -11,85 +10,40 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.append(project_root)
 from utils.utils import (
-    MODEL_MAPPING, format_time, setup_logging, save_json, load_json,
-    load_results, load_prompt, load_environment
+    format_time, setup_logging, save_json, load_json,
+    load_prompt, load_environment
 )
 
-import openai
+from google import genai
+from google.genai import types
+from google.genai import errors
+
+from pydantic import BaseModel
 from dotenv import load_dotenv
-import tiktoken
 
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+client = genai.Client(api_key=GOOGLE_API_KEY)
 
 
-def num_tokens_from_messages(messages, model="gpt-4o-mini"):
-    """
-    메시지 목록에서 토큰 수를 반환합니다.
-    (OpenAI Cookbook 예제 기반)
-    """
-    encoding = tiktoken.encoding_for_model(model)
-    
-    tokens_per_message = 3
-    tokens_per_name = 1
-        
-    num_tokens = 0
-    for message in messages:
-        num_tokens += tokens_per_message
-        for key, value in message.items():
-            num_tokens += len(encoding.encode(value))
-            if key == "name":
-                num_tokens += tokens_per_name
-    num_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
-    return num_tokens
-
-def call_openai_api(messages, model_name="gpt-4o-mini"):
-    response = client.chat.completions.create(
-        model=MODEL_MAPPING[model_name],
-        messages=messages,
-        seed=42,
-        response_format={
-            "type": "json_schema", 
-            "json_schema": {
-                "name": "preprocess_question_and_answers",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "preprocessed_question": {
-                            "type": "string"
-                        },
-                        "preprocessed_answers": {
-                            "type": "array",
-                            "items": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "required": ["preprocessed_question", "preprocessed_answers"],
-                    "additionalProperties": False
-                },
-                "strict": True
-            }
-        }
-    )
-    json_string = response.choices[0].message.content.strip()
-    
-    prompt_tokens_used = response.usage.prompt_tokens
-    completion_tokens_used = response.usage.completion_tokens
-    total_tokens_used = response.usage.total_tokens
-
-    print(f"API 응답 - 실제 사용된 프롬프트 토큰: {prompt_tokens_used} 토큰")
-    print(f"API 응답 - 실제 사용된 완료 토큰: {completion_tokens_used} 토큰")
-    print(f"API 응답 - 총 사용된 토큰: {total_tokens_used} 토큰")
-    
-    try:
-        return json.loads(json_string)
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-        print(f"Received content: {json_string}")
-        # 에러 발생 시 적절한 에러 처리 또는 기본값 반환
-        return {"preprocessed_question": "", "preprocessed_answers": []}
+def load_results(output_path, mode):
+    if os.path.exists(output_path):
+        if mode == "filtering":
+            with open(output_path, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            last_item = results[-1]
+            start_idx = last_item['q_id'] + 1
+            print(f"{start_idx}개까지 처리됨. 이어서 시작")
+        elif mode == "cleaning":
+            with open(output_path, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            start_idx = len(results)
+            print(f"{start_idx}개까지 처리됨. 이어서 시작")
+    else:
+        results = []
+        start_idx = 0
+        print("새로 시작")
+    return results, start_idx
 
 def remove_common_greetings(text):
     if not isinstance(text, str):
@@ -115,70 +69,177 @@ def remove_common_greetings(text):
     
     return text
 
-def filtering(df, env, logger):
+def parse_cleaned_qna(cleaned_qna_str, q_id, a_id, logger):
+    try:
+        cleaned_qna_dict = json.loads(cleaned_qna_str)
+        return {
+            "preprocessed_question": cleaned_qna_dict.get('preprocessed_question', ''),
+            "preprocessed_answer": cleaned_qna_dict.get('preprocessed_answer', '')
+        }
+    except json.JSONDecodeError as e:
+        if logger:
+            logger.warning(f"[JSONDecodeError] q_id: {q_id}, a_id: {a_id} - 응답 파싱 실패\n내용: {cleaned_qna_str}\n에러: {e}")
+        return None
+    except Exception as e:
+        if logger:
+            logger.warning(f"[UnknownError] q_id: {q_id}, a_id: {a_id} - 예기치 않은 오류 발생\n내용: {cleaned_qna_str}\n에러: {e}")
+        return None
+
+class Preprocess(BaseModel):
+    preprocessed_question: str
+    preprocessed_answer: str
+
+def call_gemini_api(mode, system_prompt, user_prompt):
+    if mode == "filtering":
+        config = types.GenerateContentConfig(
+            system_instruction = system_prompt,
+            temperature=0,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            )
+        )
+    elif mode == "cleaning":
+        config = types.GenerateContentConfig(
+            system_instruction = system_prompt,
+            temperature=0,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                disable=True
+            ),
+            response_mime_type="application/json",
+            response_schema=Preprocess
+        )
+    
+    max_retries = 10
+    delay = 1
+    for i in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-001",
+                contents=user_prompt,
+                config=config
+            )
+            return response.text.strip()
+        except errors.ServerError as e:
+            if e.code == 503: # ServerError 객체는 status_code 속성을 가집니다.
+                print(f"Gemini API 503 에러 발생: {e.message}. {i+1}/{max_retries} 재시도. {delay:.1f}초 후 재시도...")
+                time.sleep(delay)
+                delay *= 2 
+                if delay > 60: 
+                    delay = 60
+            else:
+                # 503이 아닌 다른 ServerError는 재시도하지 않고 바로 발생시킵니다.
+                print(f"Gemini API 서버 에러 발생 (Code: {e.status_code}): {e.message}")
+                raise 
+        except Exception as e:
+            # 예상치 못한 다른 모든 에러는 바로 발생시킵니다.
+            print(f"예상치 못한 에러 발생: {e}")
+            raise
+
+def filtering(mode, raw_data_list, env, logger):
     start_time = time.time()
-    filtered_data, start_idx = load_results(env["filtered_data_path"])
+    filtering_all_results, start_idx = load_results(env["filtering_all_results_path"], mode)
     system_prompt = load_prompt(env["system_filtering_prompt_path"])
     base_user_prompt = load_prompt(env["user_preprocessing_prompt_path"])
     
-    df_to_process = df.iloc[start_idx:]
-    for _, row in tqdm(df_to_process.iterrows(), total=len(df_to_process), desc="Filtering"):
-        title = row.get('title', '')
-        content = row.get('content', '')
-        answer = row.get('answer', '')
-        user_prompt = base_user_prompt.format(title=title, content=content, answer=answer)
+    raw_data_to_process = raw_data_list[start_idx:]
+    total_data_count = len(raw_data_to_process)
+    print(f"필터링할 데이터: {total_data_count}개")
+    
+    for item in tqdm(raw_data_to_process, total=total_data_count, desc="Filtering"):
+        q_id = item.get('q_id', '')
+        title = item.get('title', '')
+        content = item.get('content', '')
+        answers = item.get('answers', [])
+        question_date = item.get('question_date', '')
+        animal_type = item.get('animal_type', '')
         
-        is_relevant = call_openai_api(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        )
-        
-        current_item = row.fillna("").to_dict()
-        current_item['is_relevant'] = is_relevant
-        filtered_data.append(current_item)
-        save_json(filtered_data, env["filtered_data_path"])
+        for a in answers:
+            if a.get("selected"):
+                a_id = a.get('a_id', '')
+                answer_type = a.get('answer_type', '')
+                answer = a.get('answer', '')
+                answer_date = a.get('answer_date', '')
+                
+                user_prompt = base_user_prompt.format(title=title, content=content, answer=answer)
+                is_relevant = call_gemini_api(mode, system_prompt, user_prompt)
+                
+                time.sleep(0.2)  # 지연 시간 추가
+                
+                filtering_result = {
+                    "q_id": q_id,
+                    "title": title,
+                    "content": content,
+                    "answer": answer,
+                    "a_id": a_id,
+                    "answer_type": answer_type,
+                    "question_date": question_date,
+                    "answer_date": answer_date,
+                    "animal_type": animal_type,
+                    "is_relevant": is_relevant.lower()
+                }
+                filtering_all_results.append(filtering_result)
+                save_json(filtering_all_results, env["filtering_all_results_path"])
 
-    relevant_count = sum(1 for item in filtered_data if item.get('is_relevant') == 'True')
-    print(f"총 원본 데이터 개수: {len(df)}개")
-    print(f"필터링된 데이터 개수: {len(df) - relevant_count}개")
-    print(f"클리닝할 데이터 개수: {relevant_count}개")
+    irrelevant_data = [item for item in filtering_all_results if item['is_relevant'] == "false"]
+    save_json(irrelevant_data, env["irrelevant_data_path"])
+    relevant_data = [item for item in filtering_all_results if item['is_relevant'] == "true"]
+    save_json(relevant_data, env["filtered_data_path"])
+    
     elapsed = time.time() - start_time
     print(f"필터링 총 소요 시간: {format_time(elapsed)}")
     logger.info(f"필터링 완료")
 
-def cleaning(df, env, logger):
+def cleaning(mode, filtered_data_list, env, logger, batch_size):
     start_time = time.time()
-    cleaned_data, start_idx = load_results(env["cleaned_data_path"])
+    cleaned_data, start_idx = load_results(env["cleaned_data_path"], mode)
     system_prompt = load_prompt(env["system_cleaning_prompt_path"])
     base_user_prompt = load_prompt(env["user_preprocessing_prompt_path"])
     
-    relevant_items_to_process = df.iloc[start_idx:].to_dict('records')
-    for item in tqdm(relevant_items_to_process, total=len(relevant_items_to_process), desc="Cleaning"):
+    filtered_data_to_process = filtered_data_list[start_idx:]
+    total_data_count = len(filtered_data_to_process)
+    print(f"클리닝할 데이터: {total_data_count}개")
+    
+    current_batch = []
+    for i, item in enumerate(tqdm(filtered_data_to_process, total=total_data_count, desc="Cleaning")):
+        q_id = item.get('q_id', '')
         title = item.get('title', '')
         content = item.get('content', '')
-        raw_answers = item.get('answers', [])
-        answer_texts = [ans['answer'] for ans in raw_answers]
-        formatted_answers = "\n".join([f"- {i+1}. {ans_text}" for i, ans_text in enumerate(answer_texts)])
+        answer = remove_common_greetings(item.get('answer', ''))
+        a_id = item.get('a_id', '')
+        answer_type = item.get('answer_type', '')
+        question_date = item.get('question_date', '')
+        answer_date = item.get('answer_date', '')
+        animal_type = item.get('animal_type', '')
 
-        user_prompt = base_user_prompt.format(title=title, content=content, answers=formatted_answers)
-        cleaned_qna = call_openai_api(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
-        )
-        # print(cleaned_qna)
-        preprocessed_question = cleaned_qna.get('preprocessed_question', '')
-        preprocessed_answers = cleaned_qna.get('preprocessed_answers', [])
+        user_prompt = base_user_prompt.format(title=title, content=content, answer=answer)
+        cleaned_qna_str = call_gemini_api(mode, system_prompt, user_prompt)
+        parsed_result = parse_cleaned_qna(cleaned_qna_str, q_id, a_id, logger)
+        
+        if parsed_result is None:
+            continue
+        
+        preprocessed_question = parsed_result['preprocessed_question']
+        preprocessed_answer = parsed_result['preprocessed_answer']
 
-
-        cleaned_item = deepcopy(item)
-        cleaned_item['preprocessed_question'] = preprocessed_question
-        cleaned_item['preprocessed_answers'] = preprocessed_answers
-        cleaned_data.append(cleaned_item)
-        save_json(cleaned_data, env["cleaned_data_path"])
+        cleaned_item = {
+            "q_id": q_id,
+            "title": title,
+            "content": content,
+            "answer": answer,
+            "a_id": a_id,
+            "answer_type": answer_type,
+            "question_date": question_date,
+            "answer_date": answer_date,
+            "animal_type": animal_type,
+            "preprocessed_question": preprocessed_question,
+            "preprocessed_answer": preprocessed_answer
+        }
+        current_batch.append(cleaned_item)
+        
+        if (i + 1) & batch_size == 0 or (i + 1) == total_data_count:
+            cleaned_data.extend(current_batch)
+            save_json(cleaned_data, env["cleaned_data_path"])
+            current_batch = []
     
     elapsed = time.time() - start_time
     print(f"클리닝 총 소요 시간: {format_time(elapsed)}")
@@ -187,19 +248,20 @@ def cleaning(df, env, logger):
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, default="cleaning", choices=["filtering", "cleaning"])
+    parser.add_argument("--mode", type=str, choices=["filtering", "cleaning"], required=True)
+    parser.add_argument("--batch_size", type=int, default=100)
     args = parser.parse_args()
     
     env = load_environment()
-    df = pd.read_json(env["raw_data_path"], encoding='utf-8')
     logger = setup_logging()
     logger.info(f"MODE: {args.mode}")
-    logger.info(f"RAW DATA PATH: {env['raw_data_path']}")
     
     if args.mode == "filtering":
-        logger.info(f"FILTERED DATA PATH: {env['filtered_data_path']}")
-        filtering(df, env, logger)
+        raw_data_list = load_json(env["raw_data_path"])
+        logger.info(f"RAW DATA PATH: {env['raw_data_path']}")
+        filtering(args.mode, raw_data_list, env, logger)
         
     elif args.mode == "cleaning":
-        logger.info(f"CLEANED DATA PATH: {env['cleaned_data_path']}")
-        cleaning(df, env, logger)
+        filtered_data_list = load_json(env["filtered_data_path"])
+        logger.info(f"FILTERED DATA PATH: {env['filtered_data_path']}")
+        cleaning(args.mode, filtered_data_list, env, logger, args.batch_size)

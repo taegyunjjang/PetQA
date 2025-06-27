@@ -1,7 +1,0 @@
-다음은 '반려동물(개, 고양이) 의료 상담'과 관련된 질문에 대한 제목과 본문입니다.
-<pet_medical_question>
-제목: {{title}}
-본문: {{content}}
-</pet_medical_question>
-
-답변 외의 문장은 포함하지 마세요.
