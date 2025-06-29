@@ -53,14 +53,12 @@ def build_fewshot_examples(sample, shot, input_format):
             examples += f"질문: {question}\n답변: {answer}\n\n"
     return examples.strip()
 
-def get_prompts(env, item, shot, input_format):
+def get_prompts(env, item, shot, fewshot_map, input_format):
     # system prompt
     if shot == "0":
         system_prompt = load_prompt(env["system_zeroshot_prompt_path"])
     else:
-        fewshot_map = load_fewshot_examples(env)
-        id = item["id"]
-        sample = fewshot_map.get(id)
+        sample = fewshot_map.get(item["q_id"])
         fewshot_examples = build_fewshot_examples(sample, shot, input_format)
         base_system_prompt = load_prompt(env["system_fewshot_prompt_path"])
         system_prompt = base_system_prompt.format(fewshot_examples=fewshot_examples)
@@ -149,10 +147,13 @@ if __name__ == "__main__":
     results, start_idx = load_results(output_path)
     model_processor = get_model_processor(args.model_name)
     
+    if args.shot != "0":
+        fewshot_map = load_fewshot_examples(env)
+    
     test_data = load_json(env["test_data_path"])
     data_to_process = test_data[start_idx:]
     for item in tqdm(data_to_process, total=len(data_to_process), desc="답변 생성 중"):
-        system_prompt, user_prompt = get_prompts(env, item, args.shot, args.input_format)
+        system_prompt, user_prompt = get_prompts(env, item, args.shot, fewshot_map, args.input_format)
         generated_answer = model_processor(system_prompt, user_prompt)
         item['generated_answer'] = generated_answer
         results.append(item)

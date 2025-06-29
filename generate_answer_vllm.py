@@ -5,6 +5,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.append(project_root)
 
+import pandas as pd
 from tqdm import tqdm
 import argparse
 from utils.utils import (
@@ -34,6 +35,11 @@ def load_model_and_tokenizer(model_name):
         
     return llm, tokenizer
 
+def load_fewshot_examples(env):
+    fewshot_df = pd.read_json(env["fewshot_examples_path"])
+    fewshot_map = {row["q_id"]: row for _, row in fewshot_df.iterrows()}
+    return fewshot_map
+
 def build_fewshot_examples(sample, shot, input_format):
     examples = ""
     for i in range(int(shot)):
@@ -48,26 +54,31 @@ def build_fewshot_examples(sample, shot, input_format):
             examples += f"질문: {question}\n답변: {answer}\n\n"
     return examples.strip()
 
-def prepare_prompts(test_data, start_idx, tokenizer, shot, input_format, env):
+def prepare_prompts(test_data, start_idx, tokenizer, shot, fewshot_map, input_format, env):
     prompts = []
     data_to_process = test_data[start_idx:]
     
     if shot == "0":
         system_prompt = load_prompt(env["system_zeroshot_prompt_path"])
     else:
-        fewshot_map = load_json(env["fewshot_examples_path"])
-        # id = item["id"]  # 코드 수정 필요
-        sample = fewshot_map.get(id)
-        fewshot_examples = build_fewshot_examples(sample, shot, input_format)
         base_system_prompt = load_prompt(env["system_fewshot_prompt_path"])
-        system_prompt = base_system_prompt.format(fewshot_examples=fewshot_examples)
+        
+    if input_format == "raw":
+        base_user_prompt = load_prompt(env["user_raw_input_prompt_path"])
+    else:
+        base_user_prompt = load_prompt(env["user_processed_input_prompt_path"])
     
     for item in data_to_process:
+        if shot == "0":
+            pass
+        else:
+            sample = fewshot_map.get(item["q_id"])
+            fewshot_examples = build_fewshot_examples(sample, shot, input_format)
+            system_prompt = base_system_prompt.format(fewshot_examples=fewshot_examples)
+            
         if input_format == "raw":
-            base_user_prompt = load_prompt(env["user_raw_input_prompt_path"])
             user_prompt = base_user_prompt.format(title=item["title"], content=item["content"])
         else:
-            base_user_prompt = load_prompt(env["user_processed_input_prompt_path"])
             user_prompt = base_user_prompt.format(question=item["preprocessed_question"])
             
         messages = [
@@ -88,11 +99,16 @@ def generate_answers_sequential(
     llm, tokenizer, test_data, results, start_idx, 
     env, shot, input_format, output_path, logger
 ):
+    if shot != "0":
+        logger.info("fewshot 프롬프트 생성 중")
+        fewshot_map = load_fewshot_examples(env)
+        
     prompts, data_to_process = prepare_prompts(
         test_data, 
         start_idx, 
         tokenizer, 
         shot,
+        fewshot_map,
         input_format, 
         env
     )
