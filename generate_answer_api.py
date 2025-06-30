@@ -1,29 +1,26 @@
 import pandas as pd
 from tqdm import tqdm
 import argparse
+import json
+import time
+from copy import deepcopy
 import sys
 import os
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.append(project_root)
 from utils.utils import (
-    MODEL_MAPPING, setup_logging, save_json, load_json,
-    load_prompt, load_results, load_environment
+    MODEL_MAPPING, format_time, setup_logging, save_json, 
+    load_json, load_prompt, load_results, load_environment
 )
 
 from dotenv import load_dotenv
 import openai
-# import anthropic
-# import google.generativeai as genai
 
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-# ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-# GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-openai_client = openai.OpenAI(api_key=OPENAI_API_KEY)
-# anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-# genai.configure(api_key=GOOGLE_API_KEY)
+client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 
 def parse_model_name(model_name):
@@ -36,7 +33,7 @@ def parse_model_name(model_name):
   
 def load_fewshot_examples(env):
     fewshot_df = pd.read_json(env["fewshot_examples_path"])
-    fewshot_map = {row["id"]: row for _, row in fewshot_df.iterrows()}
+    fewshot_map = {row["q_id"]: row for _, row in fewshot_df.iterrows()}
     return fewshot_map
 
 def build_fewshot_examples(sample, shot, input_format):
@@ -76,13 +73,9 @@ def get_prompts(env, item, shot, fewshot_map, input_format):
 def get_model_processor(model_name):
     model_family = parse_model_name(model_name)
     if model_family == "gpt":
-        return lambda *args: generate_gpt_answer(openai_client, model_name, *args)
-    # elif model_family == "claude":
-    #     return lambda *args: generate_claude_answer(anthropic_client, model_name, *args)
-    # elif model_family == "gemini":
-    #     return lambda *args: generate_gemini_answer(model_name, *args)
+        return lambda *args: call_gpt_api(client, model_name, *args)
 
-def generate_gpt_answer(client, model_name, *args):
+def call_gpt_api(client, model_name, *args):
     system_prompt, user_prompt = args
     response = client.chat.completions.create(
         model=MODEL_MAPPING[model_name],
@@ -94,38 +87,125 @@ def generate_gpt_answer(client, model_name, *args):
     )
     return response.choices[0].message.content.strip()
 
-# def generate_claude_answer(client, model_name, *args):
-#     system_prompt, user_prompt = args
-#     message = client.messages.create(
-#         model=MODEL_MAPPING[model_name],
-#         temperature=0,
-#         max_tokens=512,
-#         system=system_prompt,
-#         messages=[
-#             {"role": "user", "content": user_prompt}
-#         ]
-#     )
-#     return message.content[0].text
+def generate_answers_batch(
+    args,
+    data_to_process,
+    fewshot_map,
+    output_path,
+    env,
+    logger
+):
+    start_time = time.time()
+    logger.info("Generating batch input...")
+    init_template = {
+        "custom_id": None,
+        "method": "POST", 
+        "url": "/v1/chat/completions",
+        "body": {
+            "model": MODEL_MAPPING[args.model_name], 
+            "messages": [],
+            "max_tokens": 512,
+            "temperature": 0
+        }
+    }
+    
+    batches = []
+    for item in data_to_process:
+        system_prompt, user_prompt = get_prompts(env, item, args.shot, fewshot_map, args.input_format)
+        batch_request_template = deepcopy(init_template)
+        batch_request_template["custom_id"] = f"{item['q_id']}_{item['a_id']}"
+        batch_request_template["body"]["messages"].append({"role": "system", "content": system_prompt})
+        batch_request_template["body"]["messages"].append({"role": "user", "content": user_prompt})
+        batches.append(batch_request_template)
+    
+    batch_input_path = env["batch_input_path"].replace(".jsonl", f"_{args.shot}_{args.input_format}.jsonl")
+    with open(batch_input_path, "w") as f:
+        for batch in batches:
+            f.write(json.dumps(batch, ensure_ascii=False) + "\n")
+            
+    logger.info("Uploading batch input to OpenAI server...")
+    batch_input_file = client.files.create(
+        file=open(batch_input_path, "rb"),
+        purpose="batch"
+    )
+    
+    batch_job = client.batches.create(
+        input_file_id=batch_input_file.id,
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+        metadata={"description": "generating answer"}
+    )
+    logger.info(f"Batch job created: {batch_job.id}")
+    
+    status_transition = False
+    try:
+        while True:
+            batch = client.batches.retrieve(batch_job.id)
+            
+            if batch.status == "validating":
+                logger.info("Batch is being validated...")
+                
+            if not status_transition and batch.status == "in_progress":
+                logger.info("Batch is in progress...")
+                status_transition = True
+                
+            if batch.status == "completed":
+                logger.info("Batch is completed successfully!")
+                break
+            
+            if batch.status == "failed":
+                logger.error("Batch failed.")
+                logger.error(batch.incomplete_details)
+                break
+            
+            # 일부 실패 시 (status는 completed지만 error_file_id가 존재)
+            if batch.error_file_id:
+                logger.error("Batch failed partially.")
+                error_file = client.files.content(batch.error_file_id)
+                with open(env["batch_error_path"], "wb") as f:
+                    f.write(error_file)
+                logger.error(error_file)
+            
+            time.sleep(60)
+        
+        file_response = client.files.content(batch.output_file_id).content
+        batch_output_path = env["batch_output_path"].replace(".jsonl", f"_{args.shot}_{args.input_format}.jsonl")
+        with open(batch_output_path, "wb") as f:
+            f.write(file_response)
+        
+        contents = []
+        with open(batch_output_path, "r") as f:
+            for line in f:
+                data = json.loads(line)
+                content = data["response"]["body"]["choices"][0]["message"]["content"]
+                contents.append(content)
+                
+        for item, content in zip(data_to_process, contents):
+            item["generated_answer"] = content
+            
+        save_json(data_to_process, output_path)
+        
+    except Exception as e:
+        logger.error(f"Error: {e}")
+    finally:
+        logger.info(f"Time taken: {format_time(time.time() - start_time)}")
 
-# def generate_gemini_answer(model_name, *args):
-#     system_prompt, user_prompt = args
-#     model = genai.GenerativeModel(
-#         model_name=MODEL_MAPPING[model_name], 
-#         system_instruction=system_prompt
-#     )
+def generate_answers_sequential(
+    args,
+    data_to_process,
+    results,
+    fewshot_map,
+    output_path,
+    env
+):
+    model_processor = get_model_processor(args.model_name)
     
-#     generation_config = {
-#         "temperature": 0, 
-#         "max_output_tokens": 512,
-#     }
-    
-#     response = model.generate_content(
-#         contents=[
-#             {"role": "user", "parts": [user_prompt]}
-#         ],
-#         generation_config=generation_config
-#     )
-#     return response.text   
+    for item in tqdm(data_to_process, total=len(data_to_process), desc="답변 생성 중"):
+        system_prompt, user_prompt = get_prompts(env, item, args.shot, fewshot_map, args.input_format)
+        generated_answer = model_processor(system_prompt, user_prompt)
+        item['generated_answer'] = generated_answer
+        results.append(item)
+        save_json(results, output_path)
 
 
 if __name__ == "__main__":
@@ -133,6 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="gpt-4o-mini")
     parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
+    parser.add_argument("--use_batch_api", action="store_true")
     args = parser.parse_args()
     
     env = load_environment()
@@ -142,22 +223,34 @@ if __name__ == "__main__":
     logger.info(f"MODEL NAME: {args.model_name}")
     logger.info(f"SHOT: {args.shot}")
     logger.info(f"INPUT FORMAT: {args.input_format}")
+    logger.info(f"USE BATCH API: {args.use_batch_api}")
     logger.info(f"OUTPUT PATH: {output_path}")
     
-    results, start_idx = load_results(output_path)
-    model_processor = get_model_processor(args.model_name)
-    
+    fewshot_map = None
     if args.shot != "0":
         fewshot_map = load_fewshot_examples(env)
     
     test_data = load_json(env["test_data_path"])
+    results, start_idx = load_results(output_path)
     data_to_process = test_data[start_idx:]
-    for item in tqdm(data_to_process, total=len(data_to_process), desc="답변 생성 중"):
-        system_prompt, user_prompt = get_prompts(env, item, args.shot, fewshot_map, args.input_format)
-        generated_answer = model_processor(system_prompt, user_prompt)
-        item['generated_answer'] = generated_answer
-        results.append(item)
-        save_json(results, output_path)
-        
-    logger.info("답변 생성 완료")
     
+    if args.use_batch_api:
+        generate_answers_batch(
+            args,
+            data_to_process,
+            fewshot_map,
+            output_path,
+            env,
+            logger
+        )
+    else:
+        generate_answers_sequential(
+            args,
+            data_to_process,
+            results,
+            fewshot_map,
+            output_path,
+            env
+        )
+    
+    logger.info("Generate answers completed.")

@@ -17,10 +17,7 @@ from etc.blocker_numpy import blocker
 import torch
 
 
-def load_model_and_tokenizer(model_name):
-    model_path = MODEL_MAPPING[model_name]
-    
-    # vLLM 모델 로드
+def load_model_and_tokenizer(model_path):
     llm = LLM(
         model=model_path,
         tensor_parallel_size=2,
@@ -54,7 +51,7 @@ def build_fewshot_examples(sample, shot, input_format):
             examples += f"질문: {question}\n답변: {answer}\n\n"
     return examples.strip()
 
-def prepare_prompts(test_data, start_idx, tokenizer, shot, fewshot_map, input_format, env):
+def get_prompts(test_data, start_idx, tokenizer, shot, fewshot_map, input_format, env):
     prompts = []
     data_to_process = test_data[start_idx:]
     
@@ -99,11 +96,12 @@ def generate_answers_sequential(
     llm, tokenizer, test_data, results, start_idx, 
     env, shot, input_format, output_path, logger
 ):
+    fewshot_map = None
     if shot != "0":
         logger.info("fewshot 프롬프트 생성 중")
         fewshot_map = load_fewshot_examples(env)
         
-    prompts, data_to_process = prepare_prompts(
+    prompts, data_to_process = get_prompts(
         test_data, 
         start_idx, 
         tokenizer, 
@@ -139,21 +137,32 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="exaone-3.5-7.8b")
     parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
+    parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
+    parser.add_argument("--use_finetuned_model", action="store_true")
     args = parser.parse_args()
     
     env = load_environment()    
-    output_path = os.path.join(env["generated_answers_dir"],
-                               f"output_{args.model_name}_{args.shot}_{args.input_format}.json")
     logger = setup_logging()
     logger.info(f"MODEL NAME: {args.model_name}")
     logger.info(f"SHOT: {args.shot}")
     logger.info(f"INPUT FORMAT: {args.input_format}")
-    logger.info(f"OUTPUT PATH: {output_path}")
+    logger.info(f"USE FINETUNED MODEL: {args.use_finetuned_model}")
     
+    if args.use_finetuned_model:
+        output_path = os.path.join(env["generated_answers_dir"],
+                               f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}.json")
+        checkpoint_dir = os.path.join(env["checkpoint_dir"],
+                                      f"{args.model_name}_{args.input_format}_{args.answer_type}")
+        best_model_dir = os.path.join(checkpoint_dir, "best_model")
+        llm, tokenizer = load_model_and_tokenizer(best_model_dir)
+    else:
+        output_path = os.path.join(env["generated_answers_dir"],
+                               f"output_{args.model_name}_{args.shot}_{args.input_format}.json")
+        llm, tokenizer = load_model_and_tokenizer(MODEL_MAPPING[args.model_name])
+        
     results, start_idx = load_results(output_path)
-    llm, tokenizer = load_model_and_tokenizer(args.model_name)
-    
     test_data = load_json(env["test_data_path"])
+    
     generate_answers_sequential(
         llm, tokenizer, test_data, results, start_idx, 
         env, args.shot, args.input_format, output_path, logger
