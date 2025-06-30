@@ -23,9 +23,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def load_datasets(data_files, logger):
-    logger.info("데이터셋 로드 중...")
+def load_datasets(data_files, answer_type, logger):
+    logger.info("Loading datasets...")
+    logger.info(f"Answer type: {answer_type}")
     dataset = load_dataset("json", data_files=data_files)
+    
+    if answer_type == "E":
+        dataset = dataset.filter(lambda x: x["answer_type"] == "expert")
+    elif answer_type == "NE":
+        dataset = dataset.filter(lambda x: x["answer_type"] == "nonexpert")
+    else:
+        pass
     
     train_data = dataset["train"]
     validation_data = dataset["validation"]
@@ -33,7 +41,7 @@ def load_datasets(data_files, logger):
     return train_data, validation_data
 
 def load_model_tokenizer(model_name, logger):
-    logger.info("모델 및 토크나이저 로드 중...")
+    logger.info("Loading model and tokenizer...")
     model_kwargs = {
         "torch_dtype": torch.bfloat16,
         "trust_remote_code": True,
@@ -82,7 +90,6 @@ def create_prompt_function(tokenizer, env, input_format):
     
     return generate_prompt
 
-
 def setup_training_args(output_dir, config, train_data):
     config_training_args = config["training_args"]
     
@@ -110,16 +117,15 @@ def train_model(model, train_data, validation_data, training_args, formatting_fu
     )
     
     if resume_from_checkpoint:
-        logger.info("학습 재개...")
+        logger.info("Resuming training...")
     else:
-        logger.info("학습 시작...")
+        logger.info("Starting training...")
         
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-    logger.info("학습 완료")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LLM 훈련")
+    parser = argparse.ArgumentParser(description="LLM SFT")
     parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="exaone-3.5-7.8b")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
     parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
@@ -130,7 +136,7 @@ if __name__ == "__main__":
     env = load_environment()
     logger = setup_logging()
     
-    wandb_run_name = f"{args.model_name}_{args.input_format}"
+    wandb_run_name = f"{args.model_name}_{args.input_format}_{args.answer_type}"
     output_dir = os.path.join(env["checkpoint_dir"], wandb_run_name)
     os.environ["WANDB_DIR"] = output_dir
     wandb.init(
@@ -139,7 +145,7 @@ if __name__ == "__main__":
         name=wandb_run_name
     )
     
-    train_data, validation_data = load_datasets(env["data_files"], logger)
+    train_data, validation_data = load_datasets(env["data_files"], args.answer_type, logger)
     model, tokenizer = load_model_tokenizer(args.model_name, logger)
     generate_prompt = create_prompt_function(tokenizer, env, args.input_format)
     config = load_config(env["config_path"])
@@ -156,4 +162,4 @@ if __name__ == "__main__":
     )
     
     wandb.finish()
-    logger.info(f"프로세스 완료: {format_time(time.time() - start_time)} 소요")
+    logger.info(f"Train process completed: {format_time(time.time() - start_time)}")
