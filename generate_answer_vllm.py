@@ -94,10 +94,10 @@ def get_prompts(test_data, start_idx, tokenizer, shot, fewshot_map, input_format
 
 def generate_answers_sequential(
     llm, tokenizer, test_data, results, start_idx, 
-    env, shot, input_format, output_path, logger
+    env, args, output_path, logger
 ):
     fewshot_map = None
-    if shot != "0":
+    if args.shot != "0":
         logger.info("fewshot 프롬프트 생성 중")
         fewshot_map = load_fewshot_examples(env)
         
@@ -105,15 +105,16 @@ def generate_answers_sequential(
         test_data, 
         start_idx, 
         tokenizer, 
-        shot,
+        args.shot,
         fewshot_map,
-        input_format, 
+        args.input_format, 
         env
     )
     
     sampling_params = SamplingParams(
         temperature=0,
         max_tokens=512,
+        repetition_penalty=1.2 if args.use_finetuned_model else 1.0, 
         stop_token_ids=[tokenizer.eos_token_id] if tokenizer.eos_token_id else None
     )
     
@@ -137,8 +138,8 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="exaone-3.5-7.8b")
     parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
-    parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
     parser.add_argument("--use_finetuned_model", action="store_true")
+    parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
     args = parser.parse_args()
     
     env = load_environment()    
@@ -147,14 +148,15 @@ if __name__ == "__main__":
     logger.info(f"SHOT: {args.shot}")
     logger.info(f"INPUT FORMAT: {args.input_format}")
     logger.info(f"USE FINETUNED MODEL: {args.use_finetuned_model}")
+    logger.info(f"ANSWER TYPE: {args.answer_type}")
     
     if args.use_finetuned_model:
         output_path = os.path.join(env["generated_answers_dir"],
                                f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}.json")
-        checkpoint_dir = os.path.join(env["checkpoint_dir"],
-                                      f"{args.model_name}_{args.input_format}_{args.answer_type}")
-        best_model_dir = os.path.join(checkpoint_dir, "best_model")
-        llm, tokenizer = load_model_and_tokenizer(best_model_dir)
+        model_path = os.path.join(env["checkpoint_dir"],
+                                      f"{args.model_name}_{args.input_format}_{args.answer_type}",
+                                      "best_model")
+        llm, tokenizer = load_model_and_tokenizer(model_path)
     else:
         output_path = os.path.join(env["generated_answers_dir"],
                                f"output_{args.model_name}_{args.shot}_{args.input_format}.json")
@@ -165,5 +167,5 @@ if __name__ == "__main__":
     
     generate_answers_sequential(
         llm, tokenizer, test_data, results, start_idx, 
-        env, args.shot, args.input_format, output_path, logger
+        env, args, output_path, logger
     )

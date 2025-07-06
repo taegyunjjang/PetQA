@@ -1,3 +1,7 @@
+# Absolute Grading: Outputs score of 1 to 5
+from prometheus_eval.vllm import VLLM
+from prometheus_eval import PrometheusEval
+from prometheus_eval.prompts import ABSOLUTE_PROMPT
 from colorama import Fore, Style
 import time
 import pandas as pd
@@ -8,12 +12,13 @@ import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.append(project_root)
-sys.setrecursionlimit(10000)
 
 from utils.utils import (
     MODEL_MAPPING, format_time, setup_logging,
-    load_environment, save_json
+    load_environment, save_json, load_prompt
 )
+
+from rubric import COMPLETENESS_RUBRIC, COHERENCE_RUBRIC, HELPFULNESS_RUBRIC
 
 
 def load_data(file_path):
@@ -32,40 +37,17 @@ def load_results(output_path):
         results = []
     return results
 
-def compute_avg_rougeL(generated_answers, gold_answers):
-    from rouge import Rouge
-    from konlpy.tag import Okt
-    okt = Okt()
-    rouge = Rouge()
-    
-    # 형태소 단위로 계산
-    generated_answers_morphs = [" ".join(okt.morphs(g)) for g in generated_answers]
-    gold_answers_morphs = [" ".join(okt.morphs(p)) for p in gold_answers]
-
-    scores = []
-    for g, p in zip(generated_answers_morphs, gold_answers_morphs):
-        scores.append(rouge.get_scores(g, p)[0]['rouge-l']['f'])
-    
-    avg_rougeL_f1 = sum(scores) / len(scores)
-    print(f"Avg ROUGE-L F1: {Fore.RED}{avg_rougeL_f1:.3f}{Style.RESET_ALL}")
-    return avg_rougeL_f1
-    
-def compute_avg_bertscore(generated_answers, gold_answers):
-    from bert_score import score
-    valid_pairs = [(g, p) for g, p in zip(generated_answers, gold_answers)]
-        
-    valid_gen, valid_gold = zip(*valid_pairs)
-    _, _, F1 = score(
-        valid_gen,
-        valid_gold, 
-        lang="ko"  # 다국어 모델: "bert-base-multilingual-cased"
+def prometheus_eval(judge, instructions, responses, reference_answers,
+                    rubric_name, rubric_template):
+    _, scores = judge.absolute_grade(
+        instructions=instructions,
+        responses=responses,
+        rubric=rubric_template,
+        reference_answers=reference_answers
     )
-    
-    total_scores = F1.tolist()
-    avg_bertscore_f1 = sum(total_scores) / len(total_scores)
-    print(f"Avg BERTScore F1: {Fore.RED}{avg_bertscore_f1:.3f}{Style.RESET_ALL}")
-    return avg_bertscore_f1
-
+    avg_score = sum(scores) / len(scores)
+    print(f"Avg Prometheus score for {rubric_name}: {Fore.RED}{avg_score:.3f}{Style.RESET_ALL}")
+    return avg_score
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="평가용 데이터 입력")
@@ -96,34 +78,49 @@ if __name__ == "__main__":
     logger.info(f"TOTAL SAMPLE COUNT: {len(df):,}")
     print("--------------------------------")
     
-    output_path = "./rouge_bertscore_results.json"
-    results = load_results(output_path)
+    prometheus_model = VLLM(
+        model="Unbabel/M-Prometheus-7B",
+        tensor_parallel_size=2
+    )
+    judge = PrometheusEval(model=prometheus_model, absolute_grade_template=ABSOLUTE_PROMPT)
+
+    unique_categories = [("dog", "expert"), ("dog", "nonexpert"), ("cat", "expert"), ("cat", "nonexpert")]
     
-    if args.use_finetuned_model:
-        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}"
-    else:
-        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}"
+    output_path = "./prometheus_results.json"
+    results = load_results(output_path)
+    system_prompt = load_prompt(env["system_prometheus_path"])
+    
+    endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}"
     endpoint_data = {"id": endpoint}
     
-    unique_categories = [("dog", "expert"), ("dog", "nonexpert"), ("cat", "expert"), ("cat", "nonexpert")]
+    rubrics_to_evaluate = {
+        "completeness": COMPLETENESS_RUBRIC,
+        "coherence": COHERENCE_RUBRIC,
+        # "helpfulness": HELPFULNESS_RUBRIC
+    }
+    
     for animal_type, answer_type in unique_categories:
         filtered_df = df[(df['animal_type'] == animal_type) & (df['answer_type'] == answer_type)]
-            
+        
         category = f"{animal_type}-{answer_type}"
         print(f"Evaluating: {category} (Sample count: {len(filtered_df):,})")
         
-        generated_answers = filtered_df['generated_answer']
-        gold_answers = filtered_df['preprocessed_answer']
-
-        avg_rougeL_f1 = compute_avg_rougeL(generated_answers, gold_answers)
-        avg_bertscore_f1 = compute_avg_bertscore(list(generated_answers), list(gold_answers))
+        instructions = [system_prompt.format(question=question) 
+                        for question in filtered_df['preprocessed_question'].tolist()]
+        responses = filtered_df['generated_answer'].tolist()
+        reference_answers = filtered_df['preprocessed_answer'].tolist()
         
-        endpoint_data[category] = {
-            "rougeL_f1": avg_rougeL_f1,
-            "bertscore_f1": avg_bertscore_f1
-        }
+        category_scores = {}
+        for rubric_name, rubric_template in rubrics_to_evaluate.items():
+            avg_score = prometheus_eval(judge, instructions, responses, reference_answers,
+                                        rubric_name, rubric_template)
+            category_scores[rubric_name] = avg_score
+        
+        endpoint_data[category] = category_scores
+        
     results.append(endpoint_data)
     save_json(results, output_path)
+
     
     elapsed = time.time() - start_time
     print(f"TOTAL TIME: {format_time(elapsed)}")

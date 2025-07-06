@@ -19,8 +19,11 @@ import pandas as pd
 
 def load_df(file_path, prepare_gold_facts):
     df = pd.read_json(file_path)
-    ids = df['id']
-    answers = df['preprocessed_answer'] if prepare_gold_facts else df['generated_answer']
+    ids = list(zip(df['q_id'], df['a_id']))
+    if prepare_gold_facts:
+        answers = df['preprocessed_answer']
+    else:
+        answers = df['generated_answer']
     return ids, answers
 
 def load_model_and_tokenizer(model_name):
@@ -48,7 +51,7 @@ def prepare_prompts(answers, start_idx, tokenizer, env, ids):
     
     ids_to_process = ids[start_idx:]
     prompts = []
-    data_to_process = answers[start_idx:]
+    data_to_process = answers[start_idx:].reset_index(drop=True)
     
     for item in data_to_process:
         user_prompt = base_user_prompt.format(sentence=item)
@@ -65,9 +68,9 @@ def prepare_prompts(answers, start_idx, tokenizer, env, ids):
         )
         prompts.append(prompt)
     
-    return ids_to_process, prompts, data_to_process
+    return ids_to_process, prompts, data_to_process.tolist()
 
-def parse_atomic_facts_from_output(output):
+def parse_atomic_facts_from_output(output, logger):
     lines = output.strip().split('\n')
     atomic_facts = []
 
@@ -83,11 +86,10 @@ def parse_atomic_facts_from_output(output):
                 fact += '.'
             atomic_facts.append(fact)
         elif line:
-            print(f"- 로 시작하지 않는 줄: {line}")
+            logger.info(f"- 로 시작하지 않는 줄: {line}")
             pass
             
     return atomic_facts
-    
 
 def generate_atomic_facts(
     llm, tokenizer, ids, answers, results, start_idx, 
@@ -112,20 +114,28 @@ def generate_atomic_facts(
         return blocker(tokenizer, input_ids, logits)
     sampling_params.logits_processors=[_logits_processor]
     
-    for (current_id, prompt, item) in tqdm(zip(ids_to_process, prompts, data_to_process), 
-                                           total=len(prompts), desc="atomic facts 생성 중"):
-        outputs = llm.generate([prompt], sampling_params, use_tqdm=False)
-        raw_output = outputs[0].outputs[0].text.strip()
-        atomic_facts = parse_atomic_facts_from_output(raw_output)
-        
-        result = {
-            "id": int(current_id),
-            "sentence": item,
-            "atomic_facts": atomic_facts
-        }
-        results.append(result)
-        save_json(results, output_path)
+    batch_size = 100
+    for i in tqdm(range(0, len(prompts), batch_size), desc="atomic facts 생성 중"):
+        batch_prompts = prompts[i : i + batch_size]
+        batch_ids = ids_to_process[i : i + batch_size]
+        batch_data = data_to_process[i : i + batch_size]
 
+        outputs = llm.generate(batch_prompts, sampling_params, use_tqdm=False)
+        for j, output_item in enumerate(outputs):
+            current_id = batch_ids[j]
+            item = batch_data[j]
+            raw_output = output_item.outputs[0].text.strip()
+            atomic_facts = parse_atomic_facts_from_output(raw_output, logger)
+            
+            result = {
+                "q_id": current_id[0],
+                "a_id": current_id[1],
+                "sentence": item,
+                "atomic_facts": atomic_facts
+            }
+            results.append(result)
+        save_json(results, output_path)
+        
     logger.info("atomic facts 생성 완료")
 
 
@@ -133,21 +143,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="generate atomic facts")
     parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="gpt-4o-mini")
     parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
-    parser.add_argument("--answer_type", choices=["expert", "nonexpert"], default="expert")
-    parser.add_argument("--animal_type", choices=["cat", "dog"], default="dog")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
+    parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
     parser.add_argument("--use_finetuned_model", action="store_true")
     parser.add_argument("--prepare_gold_facts", action="store_true")
     parser.add_argument("--judge_model_name", type=str, default="exaone-3.5-32b", choices=list(MODEL_MAPPING.keys()))
     args = parser.parse_args()
     
     env = load_environment()
-    input_path = os.path.join(env["generated_answers_dir"],
-                               f"output_{args.model_name}_{args.shot}_{args.input_format}.json")
     
-    output_path = os.path.join(env['atomic_facts_dir'], 
-                               "gold_facts.json" if args.prepare_gold_facts else 
-                               f"{args.model_name}_{args.shot}_{args.input_format}.json")
+    if args.prepare_gold_facts:
+        input_path = env["test_data_path"]
+        output_path = env["gold_facts_path"]
+    else:
+        if args.use_finetuned_model:
+            endpoint = f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}.json"
+        else:
+            endpoint = f"output_{args.model_name}_{args.shot}_{args.input_format}.json"
+        input_path = os.path.join(env["generated_answers_dir"], endpoint)
+        output_path = os.path.join(env['atomic_facts_dir'], endpoint)
+    
     logger = setup_logging()
     logger.info(f"JUDGE MODEL NAME: {args.judge_model_name}")
     logger.info(f"PREPARE GOLD FACTS: {args.prepare_gold_facts}")
