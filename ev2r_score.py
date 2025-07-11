@@ -27,7 +27,7 @@ def load_data(file_path):
     ref_answers = []
     with open(file_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-        data = data[:10]
+        data = data[:100]
         for item in data:
             questions.append(item.get("preprocessed_question", ""))
             pred_answers.append(item.get("generated_answer", ""))
@@ -50,49 +50,70 @@ class EV2REvaluator:
         
         
     def query_gpt_api(self, prompt):
+        fallback_output = {
+            "facts in predicted answer": "",
+            "fact check predicted answer": "",
+            "facts count predicted answer": 0,
+            "support predicted answer": 0,
+            "facts in reference answer": "",
+            "fact check reference answer": "",
+            "facts count reference answer": 0,
+            "support reference answer": 0
+        }
+        
         messages = [
             {"role": "user", "content": prompt}
         ]
-        
-        response = client.chat.completions.create(
-            model=self.judge_model_name,
-            messages=messages,
-            max_tokens=self.MAX_TOKENS,
-            temperature=self.TEMPERATURE,
-            seed=self.SEED,
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "ev2r_score",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "facts in predicted answer": {"type": "string"},
-                            "fact check predicted answer": {"type": "string"},
-                            "facts count predicted answer": {"type": "number"},
-                            "support predicted answer": {"type": "number"},
-                            "facts in reference answer": {"type": "string"},
-                            "fact check reference answer": {"type": "string"},
-                            "facts count reference answer": {"type": "number"},
-                            "support reference answer": {"type": "number"},
+        for attempt in range(self.MAX_RETRIES):
+            response = client.chat.completions.create(
+                model=self.judge_model_name,
+                messages=messages,
+                max_tokens=self.MAX_TOKENS,
+                temperature=self.TEMPERATURE,
+                seed=self.SEED,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "ev2r_score",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "facts in predicted answer": {"type": "string"},
+                                "fact check predicted answer": {"type": "string"},
+                                "facts count predicted answer": {"type": "number"},
+                                "support predicted answer": {"type": "number"},
+                                "facts in reference answer": {"type": "string"},
+                                "fact check reference answer": {"type": "string"},
+                                "facts count reference answer": {"type": "number"},
+                                "support reference answer": {"type": "number"},
+                            },
+                            "required": [
+                                "facts in predicted answer", 
+                                "fact check predicted answer", 
+                                "facts count predicted answer", 
+                                "support predicted answer", 
+                                "facts in reference answer", 
+                                "fact check reference answer", 
+                                "facts count reference answer", 
+                                "support reference answer"
+                            ],
+                            "additionalProperties": False
                         },
-                        "required": ["facts in predicted answer", "fact check predicted answer", "facts count predicted answer", "support predicted answer", "facts in reference answer", "fact check reference answer", "facts count reference answer", "support reference answer"],
-                        "additionalProperties": False
-                    },
-                    "strict": True
+                        "strict": True
+                    }
                 }
-            }
-        )
+            )
+            json_string = response.choices[0].message.content.strip()
+            try:
+                parsed_data = json.loads(json_string)
+                return parsed_data
+            except json.JSONDecodeError as e:
+                print(f"[시도 {attempt+1}] JSON 파싱 오류: {e}")
+                print(f"[시도 {attempt+1}] 원본(json_string[:100]): \n{json_string[:100]}")
+                print(f"[시도 {attempt+1}] 원본(json_string[-100:]): \n{json_string[-100:]}")
         
-        json_string = response.choices[0].message.content.strip()
-        try:
-            parsed_data = json.loads(json_string)
-            return parsed_data
-        except json.JSONDecodeError as e:
-            print(f"JSON 파싱 오류: {e}")
-            print(f"원본 LLM 출력 (부분): \n{json_string[:500]}...")
-            return None
-    
+        print(f"모든 재시도 실패, 기본 출력 반환")
+        return fallback_output
         
     def prompt_api_model(self, questions, pred_answers, ref_answers):
         responses = []
@@ -103,22 +124,6 @@ class EV2REvaluator:
             response = self.query_gpt_api(prompt)
             responses.append(response)
             save_json(responses, "./response_results.json")
-            
-            # attempt = 0
-            # while attempt < self.MAX_RETRIES:
-            #     try:
-            #         response = self.query_gpt_api(prompt)
-            #         if response:
-            #             responses.append(response)
-            #             save_json(responses, "./response_results.json")
-            #             break
-            #         else:
-            #             raise Exception("API 응답이 유효하지 않습니다.")
-            #     except:
-            #         attempt += 1
-            #         wait_time = 10 ** attempt
-            #         print(f"Request timed out. Retrying in {wait_time} seconds...")
-            #         time.sleep(wait_time)
                     
         return responses
     
@@ -168,3 +173,5 @@ if __name__ == "__main__":
     EV2R_scorer = EV2REvaluator(args.judge_model_name)
     f1_score = EV2R_scorer.evaluate(questions, pred_answers, ref_answers)
     print(f"Ev2R F1 Score: {Fore.RED}{f1_score}{Style.RESET_ALL}")
+    
+    
