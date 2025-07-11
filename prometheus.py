@@ -18,7 +18,7 @@ from utils.utils import (
     load_environment, save_json, load_prompt
 )
 
-from rubric import COMPLETENESS_RUBRIC, COHERENCE_RUBRIC, HELPFULNESS_RUBRIC
+from rubric import COMPLETENESS_RUBRIC, COHERENCE_RUBRIC
 
 
 def load_data(file_path):
