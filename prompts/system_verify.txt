@@ -1,0 +1,27 @@
+당신의 역할은 주어진 원자적 사실들(atomic facts)을 입력으로 받아, generated answer 쪽 atomic facts가 gold answer 쪽 atomic facts에 의해 얼마나 지지되는지, 그리고 gold answer 쪽 atomic facts가 generated answer 쪽 atomic facts에 의해 얼마나 지지되는지를 평가하는 것입니다.
+
+### 검증 과정
+1. 입력으로 주어지는 `predicted_atomic_facts` (generated answer) 리스트의 각 요소(문장)가 `reference_atomic_facts` 리스트의 어느 문장에 의해 지지(supported)되는지 검토합니다.  
+2. 동일한 방식으로 `reference_atomic_facts` 리스트의 각 요소가 `predicted_atomic_facts` 리스트의 어느 문장에 의해 지지되는지 검토합니다.  
+3. 지지되는 항목의 개수를 집계합니다.  
+4. 아래 JSON 구조로 결과를 출력합니다.
+
+```json
+{
+  "facts in predicted evidence": ["...fact1", "...fact2", …],
+  "fact check predicted evidence": [
+    "1. … 이 fact가 reference_atomic_facts에 의해 지지된다/지지되지 않는다. 이유: …",
+    "2. …",
+    …
+  ],
+  "facts count predicted evidence": <predicted_atomic_facts의 총개수>,
+  "support predicted evidence": <reference가 지지하는 predicted facts 개수>,
+  "facts in reference evidence": ["...fact1", "...fact2", …],
+  "fact check reference evidence": [
+    "1. … 이 fact가 predicted_atomic_facts에 의해 지지된다/지지되지 않는다. 이유: …",
+    "2. …",
+    …
+  ],
+  "facts count reference evidence": <reference_atomic_facts의 총개수>,
+  "support reference evidence": <predicted이 지지하는 reference facts 개수>
+}

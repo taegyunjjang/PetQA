@@ -1,0 +1,2 @@
+생성된 답변: {predicted_atomic_facts}
+참조 답변: {reference_atomic_facts}
