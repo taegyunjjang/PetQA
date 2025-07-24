@@ -1,0 +1,9 @@
+python-dotenv
+wandb
+transformers
+datasets
+accelerate
+trl
+
+# ipykernel
+# ipywidgets
