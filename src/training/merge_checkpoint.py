@@ -200,11 +200,12 @@ def verify_model(args, output_dir, logger):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepSpeed 체크포인트를 PyTorch 모델로 변환")
-    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="exaone-3.5-7.8b")
+    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="gemma-3-4b")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
     parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--use_latest_checkpoint", action="store_true")
+    parser.add_argument("--use_summarization", action="store_true")
     args = parser.parse_args()
     
     env = load_environment()
@@ -212,13 +213,15 @@ if __name__ == "__main__":
     logger.info(f"MODEL NAME: {args.model_name}")
     logger.info(f"INPUT FORMAT: {args.input_format}")
     logger.info(f"ANSWER TYPE: {args.answer_type}")
-    
+    logger.info(f"USE SUMMARIZATION: {args.use_summarization}")
     checkpoint_dir = os.path.join(env["checkpoint_dir"],
                                   f"{args.model_name}_{args.input_format}_{args.answer_type}")
+    if args.use_summarization:
+        checkpoint_dir += "_summarization"
     best_model_dir = os.path.join(checkpoint_dir, "best_model")
     
     
     checkpoint_path = find_checkpoint(args, checkpoint_dir, logger)
     success = convert_checkpoint(checkpoint_path, best_model_dir, args.model_name, logger)
-    if success:
-        verify_model(args, best_model_dir, logger)
+    # if success:
+    #     verify_model(args, best_model_dir, logger)

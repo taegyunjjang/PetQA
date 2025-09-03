@@ -44,20 +44,33 @@ def load_datasets(env, logger):
     
     return train_dataset.map(_return_prompt_and_responses), validation_dataset.map(_return_prompt_and_responses)
     
-def load_model_tokenizer(model_path, logger):
+def load_model_tokenizer(model_name, model_path, logger):
     logger.info("Loading model and tokenizer...")
+    
+    model_load_kwargs = {
+        'torch_dtype': torch.bfloat16,
+        'trust_remote_code': True,
+    }
+    
+    if model_name == "gemma-3-4b":
+        logger.info("Setting 'attn_implementation' to 'eager' for gemma-3-4b.")
+        model_load_kwargs['attn_implementation'] = 'eager'
+        
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
+        **model_load_kwargs,
     )
     
     ref_model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
+        **model_load_kwargs,
     )
     
+    if model_name == "gemma-3-4b":
+        logger.info("Disabling cache for DataParallel compatibility.")
+        model.config.use_cache = False
+        ref_model.config.use_cache = False
+        
     peft_config = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -111,8 +124,8 @@ if __name__ == "__main__":
     model_path = os.path.join(env["checkpoint_dir"], 
                               f"{args.model_name}_{args.input_format}_{args.answer_type}",
                               "best_model")
-    model, ref_model, tokenizer = load_model_tokenizer(model_path, logger)
-    
+    model, ref_model, tokenizer = load_model_tokenizer(args.model_name, model_path, logger)
+        
     dpo_config = DPOConfig(
         output_dir=output_dir,
         num_train_epochs=3,

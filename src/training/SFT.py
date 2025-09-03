@@ -25,7 +25,6 @@ load_dotenv()
 
 def load_datasets(data_files, answer_type, logger):
     logger.info("Loading datasets...")
-    logger.info(f"Answer type: {answer_type}")
     dataset = load_dataset("json", data_files=data_files)
     
     if answer_type == "E":
@@ -69,18 +68,21 @@ def load_model_tokenizer(model_name, logger):
     
     return model, tokenizer
 
-def create_prompt_function(tokenizer, env, input_format, logger):
+def create_prompt_function(tokenizer, env, args, logger):
     logger.info("Creating prompt function...")
     system_prompt = load_prompt(env["system_zeroshot_prompt_path"])
     def generate_prompt(data):
-        if input_format == "raw":
+        if args.input_format == "raw":
             base_user_prompt = load_prompt(env["user_raw_input_prompt_path"])
             user_prompt = base_user_prompt.format(title=data['title'], content=data['content'])
         else:
             base_user_prompt = load_prompt(env["user_processed_input_prompt_path"])
             user_prompt = base_user_prompt.format(question=data['preprocessed_question'])
         
-        answer = data['preprocessed_answer']
+        if args.use_summarization:
+            answer = data['summarized_answer']
+        else:
+            answer = data['preprocessed_answer']
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -130,17 +132,25 @@ def train_model(model, train_data, validation_data, training_args, formatting_fu
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LLM SFT")
-    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="exaone-3.5-7.8b")
+    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="qwen-2.5-7b")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
     parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
+    parser.add_argument("--use_summarization", action="store_true")
     parser.add_argument("--resume_from_checkpoint", action="store_true")
     args = parser.parse_args()
     
     start_time = time.time()
     env = load_environment()
     logger = setup_logging()
+    logger.info(f"MODEL NAME: {args.model_name}")
+    logger.info(f"INPUT FORMAT: {args.input_format}")
+    logger.info(f"ANSWER TYPE: {args.answer_type}")
+    logger.info(f"USE SUMMARIZATION: {args.use_summarization}")
+    
     
     wandb_run_name = f"{args.model_name}_{args.input_format}_{args.answer_type}"
+    if args.use_summarization:
+        wandb_run_name += "_summarization"
     output_dir = os.path.join(env["checkpoint_dir"], wandb_run_name)
     os.environ["WANDB_DIR"] = output_dir
     wandb.init(
@@ -149,9 +159,14 @@ if __name__ == "__main__":
         name=wandb_run_name
     )
     
-    train_data, validation_data = load_datasets(env["data_files"], args.answer_type, logger)
+    if args.use_summarization:
+        data_files = env["summarization_data_files"]
+    else:
+        data_files = env["data_files"]
+        
+    train_data, validation_data = load_datasets(data_files, args.answer_type, logger)
     model, tokenizer = load_model_tokenizer(args.model_name, logger)
-    generate_prompt = create_prompt_function(tokenizer, env, args.input_format, logger)
+    generate_prompt = create_prompt_function(tokenizer, env, args, logger)
     config = load_config(env["config_path"])
     training_args = setup_training_args(output_dir, config, train_data, logger)
     
