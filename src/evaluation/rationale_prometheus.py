@@ -38,14 +38,13 @@ def load_results(output_path):
     return results
 
 def prometheus_eval(judge, instructions, responses, reference_answers, rubric_template):
-    _, scores = judge.absolute_grade(
+    feedbacks, scores = judge.absolute_grade(
         instructions=instructions,
         responses=responses,
         rubric=rubric_template,
         reference_answers=reference_answers
     )
-    avg_score = sum(scores) / len(scores)
-    return avg_score
+    return feedbacks, scores
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="평가용 데이터 입력")
@@ -56,8 +55,6 @@ if __name__ == "__main__":
     parser.add_argument("--training_type", type=str, choices=["E", "NE", "ALL", "ORACLE"], default="ALL")
     parser.add_argument("--use_finetuned_model", action="store_true")
     parser.add_argument("--use_dpo_model", action="store_true")
-    parser.add_argument("--use_rag_model", action="store_true")
-    parser.add_argument("--top_k", type=int, default=1)
     args = parser.parse_args()
     
     env = load_environment()
@@ -76,17 +73,13 @@ if __name__ == "__main__":
         logger.info(f"USE DPO MODEL")
         logger.info(f"TRAINING TYPE: {args.training_type}")
         endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.training_type}_DPO"
-    elif args.use_rag_model:
-        logger.info(f"USE RAG MODEL")
-        logger.info(f"TOP_K: {args.top_k}")
-        endpoint = f"{args.model_name}_{args.input_format}_RAG_{args.top_k}"
     else:
         endpoint = f"{args.model_name}_{args.shot}_{args.input_format}"
         if args.shot != "0":
             endpoint = f"{endpoint}_{args.fewshot_type}"
     file_path = os.path.join(env["generated_answers_dir"], f"output_{endpoint}.json")
     
-    model_name = "Unbabel/M-Prometheus-14B"
+    model_name = "Unbabel/M-Prometheus-7B"
     logger.info(f"MODEL NAME: {model_name}")
     
     start_time = time.time()
@@ -96,8 +89,7 @@ if __name__ == "__main__":
     
     prometheus_model = VLLM(
         model=model_name,
-        tensor_parallel_size=2,
-        seed=42
+        tensor_parallel_size=2
     )
     judge = PrometheusEval(model=prometheus_model, absolute_grade_template=ABSOLUTE_PROMPT)
 
@@ -106,10 +98,9 @@ if __name__ == "__main__":
         "nonexpert": "NE"
     }
     
-    all_scores = {}
     total_count = 0
     
-    output_path = "./prometheus_results.json"
+    output_path = "./rationale_gemma_0_3.json"
     results = load_results(output_path)
     system_prompt = load_prompt(env["system_prometheus_path"])
     
@@ -122,47 +113,37 @@ if __name__ == "__main__":
     }
     
     for question_type, type_name in question_types.items():
+        all_scores = {}
         filtered_df = df[df['answer_type'] == question_type]
         
-        instructions = [system_prompt.format(question=question) 
-                        for question in filtered_df['preprocessed_question'].tolist()]
+        sample_size = 10
+        filtered_df = filtered_df.head(sample_size)
+        
+        questions = filtered_df['preprocessed_question'].tolist()
+        instructions = [system_prompt.format(question=question) for question in questions]
         responses = filtered_df['generated_answer'].tolist()
         reference_answers = filtered_df['preprocessed_answer'].tolist()
         
-        category_scores = {}
-        count = len(filtered_df)
-        
         for rubric_name, rubric_template in rubrics_to_evaluate.items():
-            print(f"====== Evaluating {rubric_name} ======")
-            avg_score = prometheus_eval(judge, instructions, responses, reference_answers, rubric_template)
-            category_scores[rubric_name] = avg_score
+            feedbacks, scores = prometheus_eval(judge, instructions, responses, reference_answers, rubric_template)
             
             if rubric_name not in all_scores:
                 all_scores[rubric_name] = []
-            all_scores[rubric_name].append((avg_score, count))
+            
+            for i in range(sample_size):
+                all_scores[rubric_name].append({
+                    "question": questions[i],
+                    "reference_answer": reference_answers[i],
+                    "generated_answer": responses[i],
+                    "score": scores[i],
+                    "feedback": feedbacks[i]
+                })
         
-        endpoint_data[type_name] = category_scores
-        total_count += count
-        
-    endpoint_data["ALL"] = {}
-    for rubric_name, scores_counts in all_scores.items():
-        weighted_avg = sum(score * count for score, count in scores_counts) / total_count
-        endpoint_data["ALL"][rubric_name] = weighted_avg
+        endpoint_data[type_name] = all_scores
  
     results.append(endpoint_data)
     save_json(results, output_path)
-    
-    print("--------------------------------")
-    print(f"ID: {endpoint}")
-    for type_name, category_scores in endpoint_data.items():
-        if type_name == "id":
-            continue
-        
-        print(f"TYPE: {type_name}")
-        for rubric_name, score in category_scores.items():
-            print(f"  {rubric_name}: {Fore.RED}{score:.3f}{Style.RESET_ALL}")
-        print("--------------------------------")
 
     elapsed = time.time() - start_time
     print(f"TOTAL TIME: {format_time(elapsed)}")
-    print("================================================")
+    print("--------------------------------")

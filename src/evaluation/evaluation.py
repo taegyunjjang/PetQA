@@ -47,7 +47,7 @@ def compute_avg_rougeL(generated_answers, gold_answers):
         scores.append(rouge.get_scores(g, p)[0]['rouge-l']['f'])
     
     avg_rougeL_f1 = sum(scores) / len(scores)
-    print(f"Avg ROUGE-L F1: {Fore.RED}{avg_rougeL_f1:.3f}{Style.RESET_ALL}")
+    print(f"Avg ROUGE: {Fore.RED}{avg_rougeL_f1:.3f}{Style.RESET_ALL}")
     return avg_rougeL_f1
     
 def compute_avg_bertscore(generated_answers, gold_answers):
@@ -63,70 +63,118 @@ def compute_avg_bertscore(generated_answers, gold_answers):
     
     total_scores = F1.tolist()
     avg_bertscore_f1 = sum(total_scores) / len(total_scores)
-    print(f"Avg BERTScore F1: {Fore.RED}{avg_bertscore_f1:.3f}{Style.RESET_ALL}")
+    print(f"Avg BERTScore: {Fore.RED}{avg_bertscore_f1:.3f}{Style.RESET_ALL}")
     return avg_bertscore_f1
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="평가용 데이터 입력")
-    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="exaone-3.5-7.8b")
+    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="gemma-3-4b")
     parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
+    parser.add_argument("--fewshot_type", type=str, choices=["baseline", "bert", "llm", "oracle"], default="oracle")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
-    parser.add_argument("--answer_type", type=str, choices=["E", "NE", "ALL"], default="ALL")
+    parser.add_argument("--training_type", type=str, choices=["E", "NE", "ALL", "ORACLE"], default="ALL")
     parser.add_argument("--use_finetuned_model", action="store_true")
+    parser.add_argument("--use_summarization", action="store_true")
     parser.add_argument("--use_dpo_model", action="store_true")
+    parser.add_argument("--use_rag_model", action="store_true")
+    parser.add_argument("--top_k", type=int, default=1)
     args = parser.parse_args()
     
     env = load_environment()
     logger = setup_logging()
     logger.info(f"MODEL NAME: {args.model_name}")
     logger.info(f"SHOT: {args.shot}")
+    if args.shot != "0":
+        logger.info(f"FEWSHOT TYPE: {args.fewshot_type}")
     logger.info(f"INPUT FORMAT: {args.input_format}")
-    logger.info(f"ANSWER TYPE: {args.answer_type}")
-    logger.info(f"USE FINETUNED MODEL: {args.use_finetuned_model}")
-    logger.info(f"USE DPO MODEL: {args.use_dpo_model}")
-
-    if args.use_finetuned_model:
-        file_path = os.path.join(env["generated_answers_dir"],
-                                 f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}.json")
-    elif args.use_dpo_model:
-        file_path = os.path.join(env["generated_answers_dir"],
-                                 f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}_DPO.json")
-    else:
-        file_path = os.path.join(env["generated_answers_dir"],
-                                 f"output_{args.model_name}_{args.shot}_{args.input_format}.json")
+    logger.info(f"USE SUMMARIZATION: {args.use_summarization}")
     
+    if args.use_finetuned_model:
+        logger.info(f"USE FINETUNED MODEL")
+        logger.info(f"TRAINING TYPE: {args.training_type}")
+        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.training_type}"
+        if args.use_summarization:
+            endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.training_type}_summarization"
+        file_path = os.path.join(env["generated_answers_dir"],
+                                 f"output_{endpoint}.json")
+    elif args.use_dpo_model:
+        logger.info(f"USE DPO MODEL")
+        logger.info(f"TRAINING TYPE: {args.training_type}")
+        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.training_type}_DPO"
+        file_path = os.path.join(env["generated_answers_dir"],
+                                 f"output_{endpoint}.json")
+    else:
+        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}"
+        if args.use_summarization:
+            endpoint = f"{endpoint}_summarization"
+        if args.shot != "0":
+            endpoint = f"{endpoint}_{args.fewshot_type}"
+        if args.use_rag_model:
+            logger.info(f"USE RAG MODEL")
+            logger.info(f"TOP_K: {args.top_k}")
+            endpoint = f"{args.model_name}_{args.input_format}_RAG_{args.top_k}"
+        file_path = os.path.join(env["generated_answers_dir"],
+                                 f"output_{endpoint}.json")
+            
     start_time = time.time()
     df = load_data(file_path)
-    logger.info(f"TOTAL SAMPLE COUNT: {len(df):,}")
-    print("--------------------------------")
+    logger.info(f"TEST DATA SAMPLE COUNT: {len(df):,}")
     
     output_path = "./rouge_bertscore_results.json"
     results = load_results(output_path)
     
-    if args.use_finetuned_model:
-        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}_{args.answer_type}"
-    else:
-        endpoint = f"{args.model_name}_{args.shot}_{args.input_format}"
     endpoint_data = {"id": endpoint}
     
-    unique_categories = [("dog", "expert"), ("dog", "nonexpert"), ("cat", "expert"), ("cat", "nonexpert")]
-    for animal_type, answer_type in unique_categories:
-        filtered_df = df[(df['animal_type'] == animal_type) & (df['answer_type'] == answer_type)]
-            
-        category = f"{animal_type}-{answer_type}"
-        print(f"Evaluating: {category} (Sample count: {len(filtered_df):,})")
-        
+    question_types = {
+        "expert": "E", 
+        "nonexpert": "NE"
+    }
+
+    all_scores = {}
+    total_count = 0
+
+    for question_type, type_name in question_types.items():
+        print(f"Evaluating: {type_name}")
+        filtered_df = df[df['answer_type'] == question_type]
+
         generated_answers = filtered_df['generated_answer']
-        gold_answers = filtered_df['preprocessed_answer']
+        if args.use_summarization:
+            gold_answers = filtered_df['summarized_answer']
+        else:
+            gold_answers = filtered_df['preprocessed_answer']
+        
+        assert len(generated_answers) == len(gold_answers)
 
         avg_rougeL_f1 = compute_avg_rougeL(generated_answers, gold_answers)
         avg_bertscore_f1 = compute_avg_bertscore(list(generated_answers), list(gold_answers))
-        
-        endpoint_data[category] = {
-            "rougeL_f1": avg_rougeL_f1,
-            "bertscore_f1": avg_bertscore_f1
+
+        count = len(filtered_df)
+        all_scores[type_name] = {
+            "ROUGE": avg_rougeL_f1,
+            "BERTScore": avg_bertscore_f1,
+            "count": count
         }
+
+        endpoint_data[type_name] = {
+            "ROUGE": avg_rougeL_f1,
+            "BERTScore": avg_bertscore_f1
+        }
+        total_count += count
+
+    print("Evaluating: ALL")
+
+    weighted_rouge = sum(all_scores[t]["ROUGE"] * all_scores[t]["count"] for t in all_scores) / total_count
+    weighted_bertscore = sum(all_scores[t]["BERTScore"] * all_scores[t]["count"] for t in all_scores) / total_count
+
+    endpoint_data["ALL"] = {
+        "ROUGE": weighted_rouge,
+        "BERTScore": weighted_bertscore
+    }
+    
+    print(f"Avg ROUGE: {Fore.RED}{weighted_rouge:.3f}{Style.RESET_ALL}")
+    print(f"Avg BERTScore: {Fore.RED}{weighted_bertscore:.3f}{Style.RESET_ALL}")
+
     results.append(endpoint_data)
     save_json(results, output_path)
     
