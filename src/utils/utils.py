@@ -96,6 +96,9 @@ def load_environment():
     SYSTEM_VERIFY_PROMPT_PATH = os.path.join(PROMPT_DIR, 'system_verify.txt')
     USER_VERIFY_PROMPT_PATH = os.path.join(PROMPT_DIR, 'user_verify.txt')
     USER_EV2R_PROMPT_PATH = os.path.join(PROMPT_DIR, 'user_ev2r.txt')
+    SYSTEM_RAG_PROMPT_PATH = os.path.join(PROMPT_DIR, 'system_rag.txt')
+    USER_RAG_PROMPT_PATH = os.path.join(PROMPT_DIR, 'user_rag.txt')
+    G_EVAL_PROMPT_PATH = os.path.join(PROMPT_DIR, 'system_g_eval.txt')
 
     DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
     RAW_DATA_DIR = os.path.join(DATA_DIR, 'raw')
@@ -109,14 +112,19 @@ def load_environment():
     DPO_FILTERED_DATA_PATH = os.path.join(INTERIM_DATA_DIR, 'dpo_filtered_data.json')
     CLEANED_DATA_PATH = os.path.join(INTERIM_DATA_DIR, 'cleaned_data.json')
     DPO_CLEANED_DATA_PATH = os.path.join(INTERIM_DATA_DIR, 'dpo_cleaned_data.json')
-    TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'test.json')
     TRAIN_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'train.json')
+    VALIDATION_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'validation.json')
+    TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'test.json')
+    SUMMARIZATION_TRAIN_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'summarization_train.json')
+    SUMMARIZATION_VALIDATION_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'summarization_validation.json')
+    SUMMARIZATION_TEST_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'summarization_test.json')
     
     OUTPUT_DIR = os.path.join(PROJECT_ROOT, 'outputs')
     BATCH_DIR = os.path.join(OUTPUT_DIR, 'batches')
     CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, 'checkpoints')
     RESULTS_DIR = os.path.join(OUTPUT_DIR, 'results')
     ATOMIC_FACTS_DIR = os.path.join(RESULTS_DIR, 'atomic_facts')
+    G_EVAL_DIR = os.path.join(RESULTS_DIR, 'g-eval')
     GENERATED_ANSWERS_DIR = os.path.join(RESULTS_DIR, 'generated_answers')
     
     BATCH_INPUT_PATH = os.path.join(BATCH_DIR, 'batch_input.jsonl')
@@ -125,6 +133,7 @@ def load_environment():
     
     GOLD_FACTS_PATH = os.path.join(ATOMIC_FACTS_DIR, 'gold_facts.json')
     FEWSHOT_EXAMPLES_PATH = os.path.join(PROCESSED_DATA_DIR, 'fewshot_examples.json')
+    RETRIEVED_PARAGRAPHS_PATH = os.path.join(PROCESSED_DATA_DIR, 'retrieved_paragraphs.json')
     
     DATA_FILES = {
         "train": os.path.join(PROCESSED_DATA_DIR, 'train.json'),
@@ -132,11 +141,19 @@ def load_environment():
         "test": os.path.join(PROCESSED_DATA_DIR, 'test.json')
     }
     
+    SUMMARIZATION_DATA_FILES = {
+        "train": os.path.join(PROCESSED_DATA_DIR, 'summarization_train.json'),
+        "validation": os.path.join(PROCESSED_DATA_DIR, 'summarization_validation.json'),
+        "test": os.path.join(PROCESSED_DATA_DIR, 'summarization_test.json')
+    }
+    
     DPO_TRAIN_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'dpo_train.json')
     DPO_VALIDATION_DATA_PATH = os.path.join(PROCESSED_DATA_DIR, 'dpo_validation.json')
     
     CONFIG_DIR = os.path.join(UTILS_DIR, 'config')
     CONFIG_PATH = os.path.join(CONFIG_DIR, 'config.yaml')
+    
+    TEXTBOOK_PATH = os.path.join(RAW_DATA_DIR, 'Introduction to Diseases, Diagnosis, and Management of Dogs and Cats (VetBooks.ir).pdf')
     
     return {
         "system_filtering_prompt_path": SYSTEM_FILTERING_PROMPT_PATH,
@@ -153,10 +170,17 @@ def load_environment():
         "system_verify_prompt_path": SYSTEM_VERIFY_PROMPT_PATH,
         "user_verify_prompt_path": USER_VERIFY_PROMPT_PATH,
         "user_ev2r_prompt_path": USER_EV2R_PROMPT_PATH,
+        "system_rag_prompt_path": SYSTEM_RAG_PROMPT_PATH,
+        "user_rag_prompt_path": USER_RAG_PROMPT_PATH,
+        "g_eval_prompt_path": G_EVAL_PROMPT_PATH,
         
         "raw_data_path": RAW_DATA_PATH,
         "train_data_path": TRAIN_DATA_PATH,
+        "validation_data_path": VALIDATION_DATA_PATH,
         "test_data_path": TEST_DATA_PATH,
+        "summarization_train_data_path": SUMMARIZATION_TRAIN_DATA_PATH,
+        "summarization_validation_data_path": SUMMARIZATION_VALIDATION_DATA_PATH,
+        "summarization_test_data_path": SUMMARIZATION_TEST_DATA_PATH,
         "filtering_all_results_path": FILTERING_ALL_RESULTS_PATH,
         "irrelevant_data_path": IRRELEVANT_DATA_PATH,
         "filtered_data_path": FILTERED_DATA_PATH,
@@ -171,15 +195,21 @@ def load_environment():
         "batch_error_path": BATCH_ERROR_PATH,
         
         "data_files": DATA_FILES,
+        "summarization_data_files": SUMMARIZATION_DATA_FILES,
         "config_path": CONFIG_PATH,
         
         "atomic_facts_dir": ATOMIC_FACTS_DIR,
+        "g_eval_dir": G_EVAL_DIR,
+        
         "gold_facts_path": GOLD_FACTS_PATH,
         
         "generated_answers_dir": GENERATED_ANSWERS_DIR,
         "fewshot_examples_path": FEWSHOT_EXAMPLES_PATH,
+        "retrieved_paragraphs_path": RETRIEVED_PARAGRAPHS_PATH,
         "dpo_train_data_path": DPO_TRAIN_DATA_PATH,
         "dpo_validation_data_path": DPO_VALIDATION_DATA_PATH,
+        
+        "textbook_path": TEXTBOOK_PATH,
     }
 
 
@@ -195,8 +225,11 @@ MODEL_MAPPING = {
     "gemma-3-4b": "google/gemma-3-4b-it",
     "qwen-2.5-7b": "Qwen/Qwen2.5-7B-Instruct",
     "exaone-3.5-7.8b": "LGAI-EXAONE/EXAONE-3.5-7.8B-Instruct",
+    "kanana-1.5-8b": "kakaocorp/kanana-1.5-8b-instruct-2505",
+    "ministral-8b": "mistralai/Ministral-8B-Instruct-2410",
     
     # judge LLM
     "qwen-2.5-72b": "Qwen/Qwen2.5-72B-Instruct",
     "exaone-3.5-32b": "LGAI-EXAONE/EXAONE-3.5-32B-Instruct",
+    "gpt-4o": "gpt-4o-2024-08-06"
 }
