@@ -150,7 +150,7 @@ def call_google_api(client, model_name, *args):
             print(f"예상치 못한 에러 발생: {e}")
             raise
 
-def run_batch_openai_api(client, args, data_to_process, output_path, env, fewshot_map, logger):
+def run_openai_batch_api(client, args, data_to_process, output_path, env, fewshot_map, logger):
     start_time = time.time()
     logger.info("Generating batch input...")
     init_template = {
@@ -246,7 +246,7 @@ def run_batch_openai_api(client, args, data_to_process, output_path, env, fewsho
     finally:
         logger.info(f"Time taken: {format_time(time.time() - start_time)}")
 
-def run_batch_anthropic_api(client, args, data_to_process, output_path, env, fewshot_map, logger):
+def run_anthropic_batch_api(client, args, data_to_process, output_path, env, fewshot_map, logger):
     start_time = time.time()
     
     batches = []
@@ -329,9 +329,9 @@ def generate_answers_batch(
     logger
 ):
     if parse_model_name(args.model_name) == "gpt":
-        run_batch_openai_api(openai_client, args, data_to_process, output_path, env, fewshot_map, logger)
+        run_openai_batch_api(openai_client, args, data_to_process, output_path, env, fewshot_map, logger)
     elif parse_model_name(args.model_name) == "claude":
-        run_batch_anthropic_api(anthropic_client, args, data_to_process, output_path, env, fewshot_map, logger)
+        run_anthropic_batch_api(anthropic_client, args, data_to_process, output_path, env, fewshot_map, logger)
     
 def generate_answers_sequential(
     args,
