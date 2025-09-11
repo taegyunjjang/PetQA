@@ -25,23 +25,23 @@ from vllm.sampling_params import GuidedDecodingParams
 class EV2REvaluator:
     def __init__(self, judge_model_name, input_path, output_path):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.MAX_RETRIES = 10
         self.SEED = 42
         self.TEMPERATURE = 0
         self.MAX_TOKENS = 2048
+        self.BATCH_SIZE = 50
         self.judge_model = MODEL_MAPPING[judge_model_name]
         self.input_path = input_path
         self.output_path = output_path
         
         self.results, self.start_idx = load_results(output_path)
         
-        self.batch_size = 20
         self.llm = LLM(
             model=self.judge_model,
             tensor_parallel_size=2,
             trust_remote_code=True,
             dtype=torch.bfloat16,
             max_model_len = 5000,
+            # max_seq_len_to_capture=32768,
             gpu_memory_utilization=0.99
         )
         
@@ -146,13 +146,13 @@ class EV2REvaluator:
         animal_types = [item["animal_type"] for item in data]
         
         prompts = self.get_prompts(questions, pred_answers, ref_answers)
-        num_batches = (len(prompts) + self.batch_size - 1) // self.batch_size
-        for i in tqdm(range(0, len(prompts), self.batch_size), total=num_batches, desc="Ev2R Score Evaluation"):
-            batch_prompts = prompts[i : i + self.batch_size]
-            batch_q_ids = q_ids[i : i + self.batch_size]
-            batch_a_ids = a_ids[i : i + self.batch_size]
-            batch_answer_types = answer_types[i : i + self.batch_size]
-            batch_animal_types = animal_types[i : i + self.batch_size]
+        num_batches = (len(prompts) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+        for i in tqdm(range(0, len(prompts), self.BATCH_SIZE), total=num_batches, desc="Ev2R Score Evaluation"):
+            batch_prompts = prompts[i : i + self.BATCH_SIZE]
+            batch_q_ids = q_ids[i : i + self.BATCH_SIZE]
+            batch_a_ids = a_ids[i : i + self.BATCH_SIZE]
+            batch_answer_types = answer_types[i : i + self.BATCH_SIZE]
+            batch_animal_types = animal_types[i : i + self.BATCH_SIZE]
             
             batch_results = self.query_vllm_api(batch_prompts)
             for j, result in enumerate(batch_results):
@@ -207,9 +207,9 @@ class EV2REvaluator:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="EV2R Score Evaluator")
-    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="gemma-3-4b")
+    parser.add_argument("--model_name", type=str, choices=list(MODEL_MAPPING.keys()), default="qwen-2.5-7b")
     parser.add_argument("--shot", type=str, choices=["0", "1", "3", "6"], default="0")
-    parser.add_argument("--fewshot_type", type=str, choices=["baseline", "bert", "llm", "oracle"], default="oracle")
+    parser.add_argument("--fewshot_type", type=str, choices=["baseline", "bert", "llm", "oracle"], default="baseline")
     parser.add_argument("--training_type", choices=["E", "NE", "ALL", "ORACLE"], default="ALL")
     parser.add_argument("--input_format", choices=["preprocessed", "raw"], default="preprocessed")
     parser.add_argument("--use_finetuned_model", action="store_true")
@@ -217,6 +217,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_dpo_model", action="store_true")
     parser.add_argument("--use_rag_model", action="store_true")
     parser.add_argument("--top_k", type=int, default=1)
+    parser.add_argument("--use_lora_model", action="store_true")
     parser.add_argument("--judge_model_name", type=str, default="exaone-3.5-32b")
     args = parser.parse_args()
     
@@ -225,6 +226,8 @@ if __name__ == "__main__":
     
     if args.use_finetuned_model:
         endpoint = f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.training_type}.json"
+        if args.use_lora_model:
+            endpoint = endpoint.replace(".json", "_LoRA.json")
     elif args.use_dpo_model:
         endpoint = f"output_{args.model_name}_{args.shot}_{args.input_format}_{args.training_type}_DPO.json"
     elif args.use_rag_model:
